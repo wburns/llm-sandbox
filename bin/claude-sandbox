@@ -11,8 +11,6 @@ SHARED_GCLOUD_DIR="$BASE_SANDBOX_DIR/shared_gcloud"
 CLAUDE_CONFIG_DIR="$HOME/.claude"
 CLAUDE_RULES_DIR="$CLAUDE_CONFIG_DIR/rules"
 
-mkdir -p "$SHARED_GCLOUD_DIR"
-
 # Initialize worktree environment with prefix 'claude'
 init_worktree_environment "claude"
 
@@ -27,15 +25,35 @@ seed_from_host "$HOME" "$SANDBOX_HOME" .claude.json
 # the session's CLAUDE.md, replacing the copied one.
 compile_rules "$SANDBOX_HOME/.claude/CLAUDE.md" "$SHIPPED_RULES_DIR" "$CLAUDE_RULES_DIR"
 
-# --- Build Tool-Specific Podman Options ---
-# Auth is Vertex AI via gcloud ADC: the shared gcloud cache below persists the
-# login between runs, so no Claude credential file is needed from the host.
+# --- Build Tool-Specific Container Options ---
 TOOL_PODMAN_ARGS=(
     -e IS_SANDBOX=1
     -e CLI_TOOL_NAME="claude"
-    -v "$SHARED_GCLOUD_DIR":/root/.config/gcloud:z
     -w /workspace
 )
+
+# --- Authentication ---
+# 1. CLAUDE_VERTEX_PROJECT_ID set: Vertex AI via gcloud ADC. The shared gcloud
+#    cache below persists the login between runs (see share/claude-setup).
+# 2. Otherwise ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN set: the Anthropic API,
+#    or a gateway when ANTHROPIC_BASE_URL is set. Every ANTHROPIC_* variable in
+#    the host environment (key/token, base URL, model choices, ...) is forwarded
+#    by name, so values never appear on the container command line.
+if [ -n "${CLAUDE_VERTEX_PROJECT_ID:-}" ]; then
+    mkdir -p "$SHARED_GCLOUD_DIR"
+    TOOL_PODMAN_ARGS+=(-v "$SHARED_GCLOUD_DIR":/root/.config/gcloud:z)
+    echo "☁️ Shared gcloud auth cache: $SHARED_GCLOUD_DIR -> /root/.config/gcloud"
+elif [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+    ANTHROPIC_VARS=()
+    while IFS= read -r var; do
+        ANTHROPIC_VARS+=("$var")
+        TOOL_PODMAN_ARGS+=(-e "$var")
+    done < <(compgen -e | grep '^ANTHROPIC_' | sort)
+    echo "🔑 Anthropic API auth: forwarding ${ANTHROPIC_VARS[*]}"
+else
+    echo "⚠️ No Claude credentials: set CLAUDE_VERTEX_PROJECT_ID (Vertex AI) or ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN."
+    echo "   Claude will ask you to log in, and that login is not kept after the session."
+fi
 
 # Mount the installed claude-setup read-only. Only the copy shipped with
 # llm-sandbox is used, never one found in the project being worked on.
@@ -51,7 +69,6 @@ if [ -n "$CLAUDE_VERTEX_PROJECT_ID" ]; then
     TOOL_PODMAN_ARGS+=(-e CLAUDE_VERTEX_PROJECT_ID="$CLAUDE_VERTEX_PROJECT_ID")
 fi
 
-echo "☁️ Shared gcloud auth cache: $SHARED_GCLOUD_DIR -> /root/.config/gcloud"
 echo "⚙️ Session home with copied config: $SANDBOX_HOME -> /root"
 
 # Run container via common-sandbox.sh

@@ -15,6 +15,8 @@ export WORKTREES_BASE_DIR="$BASE_SANDBOX_DIR/worktrees"
 export LOGSEQ_LOG_DIR="${LOGSEQ_LOG_DIR:-$HOME/.local/share/llm-sandbox-logs}"
 export LOGSEQ_GRAPH_DIR="${LOGSEQ_GRAPH_DIR:-$HOME/Documents/Logseq}"
 _COMMON_SANDBOX_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Container runtime (podman or docker), picked when a session starts.
+source "$_COMMON_SANDBOX_DIR/../backend/selector.sh"  # (bin/ and backend/ are siblings)
 
 # --- 2. Maintenance Flags ---
 handle_maintenance_flags() {
@@ -121,7 +123,13 @@ AUTH_SYNC_SESSION=()   # matching path inside the session home
 AUTH_SYNC_BASELINE=()  # sha256 of the host file at launch ("absent" if missing)
 
 _file_hash() {
-    if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo absent; fi
+    if [ ! -f "$1" ]; then
+        echo absent
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1  # older macOS has no sha256sum
+    fi
 }
 
 # seed_auth_from_host <host_dir> <dest_dir> <item>...
@@ -164,12 +172,15 @@ _sync_auth_back() {
             continue
         fi
 
-        target="$(readlink -m "$host")"
+        # Write through a symlinked host file. (readlink -f, unlike GNU's -m, exists
+        # on macOS too; it can fail there when the file doesn't exist yet.)
+        target="$(readlink -f "$host" 2>/dev/null)" || target="$host"
         mkdir -p "$(dirname "$target")"
         tmp="$(mktemp "$target.XXXXXX")" || continue
         if cp "$session" "$tmp"; then
             if [ -f "$target" ]; then
-                chmod --reference="$target" "$tmp"
+                # Keep the host file's mode (GNU stat, else BSD/macOS stat)
+                chmod "$(stat -c '%a' "$target" 2>/dev/null || stat -f '%Lp' "$target")" "$tmp"
             else
                 chmod 600 "$tmp"
             fi
@@ -238,6 +249,9 @@ init_worktree_environment() {
         echo "ERROR: Current directory is not inside a Git repository." >&2
         exit 1
     fi
+
+    # Fail before creating the worktree if no container runtime is usable
+    select_backend || exit 1
 
     MAIN_REPO_DIR="$(git rev-parse --show-toplevel)"
     COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
@@ -438,10 +452,11 @@ _cleanup_and_merge_prompt() {
 }
 
 # --- 5. Container Execution ---
-# run_agent_container <image> [podman options...] [-- command [args...]]
-# Everything before "--" is passed to podman as options. Everything after it is
-# the command run inside the container (podman requires it to come *after* the
-# image name, so it is placed there here). With no command the image's CMD runs.
+# run_agent_container <image> [run options...] [-- command [args...]]
+# Everything before "--" is passed to `podman run` / `docker run` (see
+# backend/selector.sh) as options. Everything after it is the command run inside
+# the container (it must come *after* the image name, so it is placed there
+# here). With no command the image's CMD runs.
 run_agent_container() {
     local image_name="$1"
     shift
@@ -485,16 +500,22 @@ run_agent_container() {
         -e LOGSEQ_LOG_DIR=/logseq-logs
     )
 
+    # Forwarded by name (value taken from this process's environment), so the
+    # token never appears on the podman/docker command line or in `ps`.
     if [ -n "$HOST_GH_TOKEN" ]; then
-        base_flags+=(--env GH_TOKEN="$HOST_GH_TOKEN")
+        export GH_TOKEN="$HOST_GH_TOKEN"
+        base_flags+=(--env GH_TOKEN)
     fi
 
     echo "🚀 Launching container [$CONTAINER_NAME]..."
     echo "📂 Workspace: $WORKTREE_DIR -> /workspace"
     echo "☕ Maven cache: $SHARED_M2_DIR -> /root/.m2/repository"
     echo "📝 Logseq logs: $SESSION_LOG_DIR -> /logseq-logs (synced to $LOGSEQ_GRAPH_DIR on exit)"
-
-    podman run "${base_flags[@]}" "${extra_args[@]}" "$image_name" "${container_cmd[@]}"
+    select_backend || exit 1  # (already done by init_worktree_environment)
+    echo "📦 Container backend: $SANDBOX_BACKEND"
+    backend_preflight
+    adapt_run_options "${base_flags[@]}" "${extra_args[@]}"
+    backend_cli run "${ADAPTED_RUN_OPTIONS[@]}" "$image_name" "${container_cmd[@]}"
 }
 
 # --- 6. Direct Invocation (maintenance entry point) ---

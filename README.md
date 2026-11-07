@@ -1,7 +1,7 @@
 # llm-sandbox
 
 Run LLM coding agents ([IBM Bob](https://bob.ibm.com), [Claude Code](https://claude.com/claude-code),
-[Gemini CLI](https://github.com/google-gemini/gemini-cli)) in **ephemeral Podman containers**, each working in its
+[Gemini CLI](https://github.com/google-gemini/gemini-cli)) in **ephemeral Podman (or Docker) containers**, each working in its
 own throw-away **git worktree**. When the session ends you choose whether to merge the agent's commits back,
 keep the branch, or discard everything.
 
@@ -51,9 +51,11 @@ fedora:latest
 
 ```
 bin/        launcher scripts and common-sandbox.sh
+backend/    container runtime selection (selector.sh) and one backend per runtime (podman/, docker/)
+deps/       per-OS dependency checks run by install.sh (darwin.sh, linux.sh, shared helpers in common.sh)
 images/     Dockerfiles for the base image and each agent image
-rules/      default agent rules, installed for all three agents
-skills/     default agent skills, installed for all three agents
+rules/      default agent rules, installed for each agent found on the host
+skills/     default agent skills, installed for each agent found on the host
 share/      helper files mounted into containers (claude-setup, bob-prompt, logseq-tracker)
 systemd/    service unit template
 justfile    image build / startup recipes
@@ -62,11 +64,26 @@ install.sh  installer
 
 ## Requirements
 
-- A Linux host with `podman` and `git`, and GNU coreutils (the scripts use `readlink -m` and `chmod --reference`, so
-  macOS/BSD are not supported). The containers themselves are Fedora-based, whatever your host distro, and the
-  images build for x86_64 or aarch64.
-- [`just`](https://github.com/casey/just) and systemd (only for the automatic image update service)
-- `gh` (optional, its token is forwarded into containers)
+- Linux or macOS (12.3 or later, for `readlink -f`) with `git` and bash 4 or later.
+- A container runtime: `podman` (preferred) or `docker`. The first one that is installed **and running** is used;
+  set `LLM_SANDBOX_BACKEND=podman` or `=docker` to force one. Rootful Docker on Linux leaves files the agent writes
+  owned by root, so use rootless Docker or podman there.
+- The containers themselves are Fedora-based, whatever your host OS, and the images build for x86_64 or aarch64.
+- [`just`](https://github.com/casey/just) to build the images, and systemd for the automatic image update service
+  (Linux only; on macOS run the `just` recipe by hand)
+- `gh` (optional, its token is forwarded into containers) and `fzf` (optional, for `sandbox-attach`'s picker)
+
+On macOS with Homebrew:
+
+```bash
+brew install bash just          # macOS ships bash 3.2; the scripts need 4+ (first on PATH)
+brew install podman && podman machine init && podman machine start
+#   ...or use Docker Desktop, Rancher Desktop or colima instead of podman
+brew install gh fzf             # optional
+```
+
+On macOS the runtime runs in a VM: the SELinux `:z`/`:Z` mount flags are dropped there, and `--network host` is the
+VM's network, not the Mac's.
 
 ## Install
 
@@ -77,11 +94,19 @@ install.sh  installer
 ./install.sh --uninstall  # remove everything the installer created
 ```
 
+The installer first detects the OS and runs its dependency check ([`deps/darwin.sh`](deps/darwin.sh) or
+[`deps/linux.sh`](deps/linux.sh)), which prints one line per dependency with its version or a hint for installing
+it. If a required one (bash 4+, git, just, podman or docker) is missing it stops before writing anything; optional
+ones (gh, fzf, a running container runtime, systemd on Linux) only produce a warning.
+
 By default:
 
 - files are copied to `~/.local/share/llm-sandbox`
-- commands are symlinked into `~/.local/bin`
-- `rules/` and `skills/` are copied into `~/.bob`, `~/.claude` and `~/.gemini` (under `rules/` and `skills/`)
+- commands are symlinked into `~/.local/bin`: `review-pr`, `fix-issue`, `sandbox-attach` and `common-sandbox`
+  always, and `bob-sandbox` / `claude-sandbox` / `gemini-sandbox` only for agents whose config directory exists
+  (a link from an earlier install for an agent that is no longer found is removed)
+- `rules/` and `skills/` are copied into whichever of `~/.bob`, `~/.claude` and `~/.gemini` already exist (under
+  `rules/` and `skills/`); the installer lists which agents it found and skips the rest
 - the unit is written to `~/.config/systemd/user/llm-sandbox-update.service`
 
 Override with `INSTALL_DIR`, `BIN_DIR`, `UNIT_DIR`, `BOB_DIR`, `CLAUDE_DIR` and `GEMINI_DIR`.
@@ -119,7 +144,7 @@ common-sandbox --clean   # wipe all sandbox state and worktrees
   [ripwire](https://github.com/redhat-et/ripwire) (pinned to v0.6.9) into `/usr/local/bin`, and the default
   rule `rules/ripwire.md` tells the agent to use it for code exploration. If you don't want it, remove the
   install step from `images/Dockerfile.agent-base` and delete `rules/ripwire.md` before installing.
-- **Default rules and skills are installed for all three agents** (see below).
+- **Default rules and skills are installed for every agent found on the host** (see below).
 - **Agents run with their safety prompts off**: Claude is started with `--dangerously-skip-permissions` and
   Gemini with `--approval-mode=yolo`. The container and throw-away worktree are the safety boundary.
 - **Containers use host networking** (`--network host`), run as root, and receive your `gh` token as `GH_TOKEN`
@@ -168,18 +193,19 @@ live file and nothing can modify your host config directly.
 | Agent | Authentication | Copied in (discarded on exit) | Generated per session |
 |---|---|---|---|
 | Bob | Login saved in `~/.bob/settings/auth-secrets.json` (created or updated on exit, **synced back**) | `~/.bob/{rules,skills}`, `~/.bob/settings/settings.json` | – |
-| Claude | Vertex AI via gcloud (cache in `$BASE_SANDBOX_DIR/shared_gcloud`, see below) | `~/.claude/{settings.json,skills,CLAUDE.md}`, `~/.claude.json` | `~/.claude/CLAUDE.md` from `rules/` |
+| Claude | Vertex AI via gcloud (cache in `$BASE_SANDBOX_DIR/shared_gcloud`), else `ANTHROPIC_*` environment variables (see below) | `~/.claude/{settings.json,skills,CLAUDE.md}`, `~/.claude.json` | `~/.claude/CLAUDE.md` from `rules/` |
 | Gemini | `GEMINI_API_KEY` environment variable | `~/.gemini/{settings.json,.env,skills,policies,GEMINI.md}` | `~/.gemini/GEMINI.md` from `rules/` |
 
 Files that don't exist on the host are skipped.
 
 #### Authentication
 
-All three images are always built, whatever credentials you have: the `just` recipe and the startup service never
-check `CLAUDE_VERTEX_PROJECT_ID`, `GEMINI_API_KEY` or `auth-secrets.json`. These only matter when you launch an
-agent. To skip an agent you don't use, remove its `podman build` line from the `justfile`.
+An agent's image is built when its config directory (`~/.bob`, `~/.claude`, `~/.gemini`, or `BOB_DIR` /
+`CLAUDE_DIR` / `GEMINI_DIR`) exists, whatever credentials you have: the `just` recipe and the startup service never
+check `CLAUDE_VERTEX_PROJECT_ID`, `ANTHROPIC_*`, `GEMINI_API_KEY` or `auth-secrets.json`. These only matter when you
+launch an agent.
 
-Only these three authentication setups are supported out of the box. Other modes (Claude or Gemini OAuth/browser
+Only these authentication setups are supported out of the box. Other modes (Claude or Gemini OAuth/browser
 logins, other Bob auth methods, ...) are not wired up; adapt the launchers if you use them.
 
 - **Bob:** `auth-secrets.json` is copied into the session if it exists, and `bob-sandbox` starts either way. If it
@@ -190,12 +216,19 @@ logins, other Bob auth methods, ...) are not wired up; adapt the launchers if yo
   sandbox refreshed it), the newer file wins and a warning is printed when the host's is kept. Syncing runs on a
   normal exit, Ctrl-C and `SIGTERM`, but not if the launcher is killed with `SIGKILL`, in which case that
   session's login is lost.
-- **Claude:** authenticates to Vertex AI with gcloud Application Default Credentials (ADC). Set your Google Cloud
-  project ID in `CLAUDE_VERTEX_PROJECT_ID` on the host before launching (see [Setting the Vertex project](#setting-the-vertex-project)).
-  The credentials live in `$BASE_SANDBOX_DIR/shared_gcloud` (mounted read-write, **not** your host's
-  `~/.config/gcloud`), so you only log in once across all sandboxes. `ANTHROPIC_API_KEY` is not forwarded.
-  `common-sandbox --clean` deletes the gcloud cache, and `--prune` deletes files in it that haven't been accessed for
-  14 days.
+- **Claude:** `claude-sandbox` picks the first of these that is set on the host:
+  1. `CLAUDE_VERTEX_PROJECT_ID`: Vertex AI with gcloud Application Default Credentials (ADC) (see
+     [Setting the Vertex project](#setting-the-vertex-project)). The credentials live in
+     `$BASE_SANDBOX_DIR/shared_gcloud` (mounted read-write, **not** your host's `~/.config/gcloud`), so you only log
+     in once across all sandboxes. `ANTHROPIC_*` variables are not forwarded in this mode. `common-sandbox --clean`
+     deletes the gcloud cache, and `--prune` deletes files in it that haven't been accessed for 14 days.
+  2. `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`: the Anthropic API, or an LLM gateway when `ANTHROPIC_BASE_URL`
+     is set. Every `ANTHROPIC_*` variable exported on the host (key or token, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`,
+     `ANTHROPIC_DEFAULT_*_MODEL`, ...) is forwarded into the container by name, and the launcher prints which ones.
+     With `ANTHROPIC_API_KEY`, Claude Code asks once whether to use the key unless your host `~/.claude.json`
+     already approved it; that answer is not kept after the session.
+
+  With neither set, Claude starts and asks you to log in, but that login is discarded with the session.
 - **Gemini:** export `GEMINI_API_KEY` on the host; it is forwarded into every container. If it is unset, nothing is
   forwarded and `gemini-sandbox` still starts without a warning, so Gemini will have no API key. Nothing else needs
   to persist. `settings.json` (which selects the API-key login method) is copied in, but changes made to it inside
@@ -220,8 +253,8 @@ with that project ID before starting Claude. The script is only about gcloud and
 
 If the login or the quota project can't be set up (for example you lack access to the project), the script prints the
 error and `claude-sandbox` exits instead of starting Claude. If `CLAUDE_VERTEX_PROJECT_ID` is unset, `claude-setup`
-is skipped: Claude still starts, but no gcloud login is attempted and it only has whatever your copied
-`~/.claude/settings.json` provides. That file may already contain the `CLAUDE_CODE_USE_VERTEX` /
+is skipped: Claude uses the `ANTHROPIC_*` variables (see above) or whatever your copied `~/.claude/settings.json`
+provides, and no gcloud login is attempted. That file may already contain the `CLAUDE_CODE_USE_VERTEX` /
 `ANTHROPIC_VERTEX_PROJECT_ID` environment values, but it does not create the gcloud login. If your `settings.json`
 sets a different project than `CLAUDE_VERTEX_PROJECT_ID`, keep the two consistent.
 
@@ -245,8 +278,8 @@ into `CLAUDE.md` / `GEMINI.md` inside the session home on each launch (see `comp
 
 Notes:
 
-- By default `install.sh` also writes to the host: it copies `rules/` and `skills/` into `~/.bob`, `~/.claude` and
-  `~/.gemini`, so host-side runs of those tools pick them up too. Use `--no-agent-config` to leave those directories
+- By default `install.sh` also writes to the host: it copies `rules/` and `skills/` into whichever of `~/.bob`,
+  `~/.claude` and `~/.gemini` exist, so host-side runs of those tools pick them up too. Use `--no-agent-config` to leave those directories
   alone; sandboxes still get the rules and skills from the install directory. The launchers never write to those
   directories.
 - Re-running `install.sh` overwrites files with the same name; other files you keep in those directories are
@@ -265,6 +298,8 @@ Notes:
 | `BASE_SANDBOX_DIR` | `~/.local/share/llm_sandbox_homes` | Session homes, worktrees, shared Maven/gcloud caches |
 | `GEMINI_API_KEY` | – | Gemini authentication; forwarded to the Gemini container |
 | `CLAUDE_VERTEX_PROJECT_ID` | – | Claude authentication: Google Cloud project ID for Vertex AI. See [Setting the Vertex project](#setting-the-vertex-project) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | – | Claude authentication when `CLAUDE_VERTEX_PROJECT_ID` is unset; all `ANTHROPIC_*` variables are forwarded |
+| `LLM_SANDBOX_BACKEND` | auto | Force the container runtime: `podman` or `docker` (default: podman if running, else docker) |
 
 Bob needs no environment variable: log in at its prompt on first run and `~/.bob/settings/auth-secrets.json` is
 saved on exit. See [What the containers see](#what-the-containers-see) for everything else that is read from the host.

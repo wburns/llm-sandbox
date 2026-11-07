@@ -35,7 +35,7 @@ TOOL_PODMAN_ARGS=(
 
 # Auth is the GEMINI_API_KEY environment variable, forwarded on every launch.
 if [ -n "$GEMINI_API_KEY" ]; then
-    TOOL_PODMAN_ARGS+=(-e GEMINI_API_KEY="$GEMINI_API_KEY")
+    TOOL_PODMAN_ARGS+=(-e GEMINI_API_KEY)  # by name, so the key isn't on the command line
 fi
 
 # Run the container (pass any CLI command arguments)

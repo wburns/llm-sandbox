@@ -9,11 +9,23 @@ startup:
     {{root}}/bin/common-sandbox.sh --prune
     {{just}} --justfile {{root}}/justfile update-agent-sandbox
 
-# Build and update the container images for all agents
+# Build and update the container images (with podman, else docker; see backend/selector.sh).
+# An agent's image is only built when its config directory (~/.bob, ~/.claude, ~/.gemini) exists.
 update-agent-sandbox:
-    podman pull docker.io/library/fedora:latest
-    podman build -t agent-base-sandbox:latest -f {{root}}/images/Dockerfile.agent-base {{root}}/images
-    podman build -t bob-dev-sandbox:latest -f {{root}}/images/Dockerfile.bob-base {{root}}/images
-    podman build -t gemini-dev-sandbox:latest -f {{root}}/images/Dockerfile.gemini-base {{root}}/images
-    podman build -t claude-dev-sandbox:latest -f {{root}}/images/Dockerfile.claude-base {{root}}/images
-    podman image prune -f
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{root}}/backend/selector.sh"
+    select_backend
+    echo "📦 Container backend: $SANDBOX_BACKEND"
+    backend_cli pull docker.io/library/fedora:latest
+    backend_cli build -t agent-base-sandbox:latest -f "{{root}}/images/Dockerfile.agent-base" "{{root}}/images"
+    for entry in "bob:${BOB_DIR:-$HOME/.bob}" "gemini:${GEMINI_DIR:-$HOME/.gemini}" "claude:${CLAUDE_DIR:-$HOME/.claude}"; do
+        agent="${entry%%:*}" dir="${entry#*:}"
+        if [ -d "$dir" ]; then
+            echo "✅ Found $dir — building $agent-dev-sandbox"
+            backend_cli build -t "$agent-dev-sandbox:latest" -f "{{root}}/images/Dockerfile.$agent-base" "{{root}}/images"
+        else
+            echo "⏭️  No $dir found — skipping $agent-dev-sandbox"
+        fi
+    done
+    backend_cli image prune -f
