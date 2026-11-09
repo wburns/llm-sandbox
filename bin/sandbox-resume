@@ -337,9 +337,24 @@ case "$AGENT" in
         TOOL_PODMAN_ARGS=(
             -e IS_SANDBOX=1
             -e CLI_TOOL_NAME="claude"
-            -v "$SHARED_GCLOUD_DIR":/root/.config/gcloud:z
             -w /workspace
         )
+        if [ -n "${CLAUDE_VERTEX_PROJECT_ID:-}" ]; then
+            mkdir -p "$SHARED_GCLOUD_DIR"
+            TOOL_PODMAN_ARGS+=(-v "$SHARED_GCLOUD_DIR":/root/.config/gcloud:z)
+            echo "☁️ Shared gcloud auth cache: $SHARED_GCLOUD_DIR -> /root/.config/gcloud"
+        elif [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+            ANTHROPIC_VARS=()
+            while IFS= read -r var; do
+                ANTHROPIC_VARS+=("$var")
+                TOOL_PODMAN_ARGS+=(-e "$var")
+            done < <(compgen -e | grep '^ANTHROPIC_' | sort)
+            echo "🔑 Anthropic API auth: forwarding ${ANTHROPIC_VARS[*]}"
+        else
+            echo "⚠️ No Claude credentials: set CLAUDE_VERTEX_PROJECT_ID (Vertex AI) or ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN."
+            echo "   Claude will ask you to log in, and that login is not kept after the session."
+        fi
+
         if [ -f "$CLAUDE_SETUP_PATH" ]; then
             TOOL_PODMAN_ARGS+=(-v "$CLAUDE_SETUP_PATH":/usr/local/bin/claude-setup:ro,z)
         fi
@@ -385,7 +400,7 @@ case "$AGENT" in
             -e GEMINI_CLI_TRUST_WORKSPACE="true"
         )
         if [ -n "${GEMINI_API_KEY:-}" ]; then
-            TOOL_PODMAN_ARGS+=(-e GEMINI_API_KEY="$GEMINI_API_KEY")
+            TOOL_PODMAN_ARGS+=(-e GEMINI_API_KEY)
         fi
 
         if [ "${#PASSED_CMD[@]}" -gt 0 ]; then

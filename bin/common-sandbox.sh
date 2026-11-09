@@ -489,6 +489,7 @@ run_agent_container() {
         --label "llm-sandbox.branch=$TEMP_BRANCH"
         --label "llm-sandbox.base-branch=$CURRENT_BRANCH"
         --network host
+        --tz=local
         -e TERM="${TERM:-xterm-256color}"
         -e COLORTERM="${COLORTERM:-truecolor}"
         -v "$WORKTREE_DIR":/workspace:Z
