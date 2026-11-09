@@ -167,6 +167,7 @@ agent's config directory so host-side runs of the tools use them:
 | Path | Purpose |
 |---|---|
 | `rules/ripwire.md` | Tells the agent to explore code with `ripwire` instead of reading whole files |
+| `rules/coding.md` | Coding guidelines |
 | `skills/code-review/` | Review a branch/PR against repo coding standards and the originating spec |
 | `skills/grill-me/` | Stress-test a plan or decision by questioning the user |
 | `skills/fix-github/` | Fix a GitHub issue, logging the run in Logseq format |
