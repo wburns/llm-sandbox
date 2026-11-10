@@ -393,6 +393,26 @@ init_resume_environment() {
     CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
     INITIAL_COMMIT="$(git rev-parse HEAD)"
 
+    if [ -f "$session_home/.session-info" ]; then
+        SESSION_CREATED_AT="$(sed -n 's/^CREATED_AT=//p' "$session_home/.session-info" | head -n 1)"
+        # The session's own base branch must survive a resume: CURRENT_BRANCH is
+        # just whatever is checked out now, and only applies to this resumed run.
+        SESSION_BASE_BRANCH="$(sed -n 's/^BASE_BRANCH=//p' "$session_home/.session-info" | head -n 1)"
+    fi
+
+    # Resume from the branch the session started on, not whatever the main repo
+    # has checked out now (the checkout is left alone; the worktree is based on
+    # the branch and the merge back targets it). An explicit `-b <branch>` wins.
+    if [ -z "${TARGET_BRANCH:-}" ] && [ -n "${SESSION_BASE_BRANCH:-}" ] && [ "$SESSION_BASE_BRANCH" != "$CURRENT_BRANCH" ]; then
+        if git rev-parse --verify -q "refs/heads/$SESSION_BASE_BRANCH" >/dev/null; then
+            echo "🔀 '$MAIN_REPO_DIR' is on '$CURRENT_BRANCH', but the session started from '$SESSION_BASE_BRANCH'; basing the resumed session on '$SESSION_BASE_BRANCH' (use -b to override)."
+            CURRENT_BRANCH="$SESSION_BASE_BRANCH"
+            INITIAL_COMMIT="$(git rev-parse "refs/heads/$CURRENT_BRANCH")"
+        else
+            echo "⚠️ The session's branch '$SESSION_BASE_BRANCH' no longer exists; basing the resumed session on '$CURRENT_BRANCH'." >&2
+        fi
+    fi
+
     AGENT_PREFIX="$agent_prefix"
     SESSION_ID="${$}_$(date +%s)"
     WORKTREE_NAME="${agent_prefix}_resume_${CURRENT_BRANCH//\//_}_${SESSION_ID}"
@@ -403,18 +423,12 @@ init_resume_environment() {
     CONTAINER_NAME="${agent_prefix}_resume_${SESSION_ID}"
     SESSION_LOG_DIR="$LOGSEQ_LOG_DIR/$CONTAINER_NAME"
 
-    if [ -f "$SANDBOX_HOME/.session-info" ]; then
-        SESSION_CREATED_AT="$(sed -n 's/^CREATED_AT=//p' "$SANDBOX_HOME/.session-info" | head -n 1)"
-        # The session's own base branch must survive a resume: CURRENT_BRANCH is
-        # just whatever is checked out now, and only applies to this resumed run.
-        SESSION_BASE_BRANCH="$(sed -n 's/^BASE_BRANCH=//p' "$SANDBOX_HOME/.session-info" | head -n 1)"
-    fi
     [ -n "${SESSION_CREATED_AT:-}" ] || SESSION_CREATED_AT="$(date +'%Y-%m-%d %H:%M:%S')"
 
     mkdir -p "$SANDBOX_HOME" "$SHARED_M2_DIR" "$WORKTREES_BASE_DIR"
 
     echo "🌿 Creating worktree at $WORKTREE_DIR based on '$CURRENT_BRANCH' for resume..."
-    git worktree add -b "$TEMP_BRANCH" "$WORKTREE_DIR" HEAD
+    git worktree add -b "$TEMP_BRANCH" "$WORKTREE_DIR" "$INITIAL_COMMIT"
 
     _save_session_metadata "resumed"
 

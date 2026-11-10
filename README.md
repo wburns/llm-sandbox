@@ -48,7 +48,9 @@ fedora:latest
     considers sandboxes that were started from `<branch>` (e.g. a PR or issue branch) and everything after the options
     is the command. Containers are labelled `llm-sandbox.branch` (session branch) and `llm-sandbox.base-branch`.
   - `llm-sandbox resume [-a] [-b <branch>] [<session>] [command...]` – resumes a previously closed session with a fresh
-    on-demand worktree and mounts the preserved session history (`/root`). `-b` sets the base branch for the new worktree.
+    on-demand worktree and mounts the preserved session history (`/root`). The worktree is based on the branch the session started from (your current checkout is left alone and a
+    different branch is reported); if that branch no longer exists, the current checkout is used. `-b` checks out and
+    uses another base branch instead.
   - `llm-sandbox pack [-a] [-f] [-o <file.zip>] [<session>]` / `llm-sandbox unpack [-f] <file.zip>` – moves a session to another
     machine. `pack` picks a session the same way (`fzf` picker or session ID/prefix) and zips **only its conversation
     history** (bob's `bob.db`, claude's `projects/` and `history.jsonl`, gemini's `tmp/` chats, codex's `sessions/` and
