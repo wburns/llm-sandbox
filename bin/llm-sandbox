@@ -427,7 +427,15 @@ do_resume() {
             if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
                 CLAUDE_INVOKE=("${PASSED_CMD[@]}")
             else
-                CLAUDE_INVOKE=(claude --dangerously-skip-permissions --resume)
+                # Headless (claude -p) sessions need an explicit session id: the id is the
+                # name of the newest transcript. Without one, fall back to the picker.
+                local transcript
+                transcript="$(ls -t "$SANDBOX_HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -n 1)"
+                if [ -n "$transcript" ]; then
+                    CLAUDE_INVOKE=(claude --dangerously-skip-permissions --resume "$(basename "$transcript" .jsonl)")
+                else
+                    CLAUDE_INVOKE=(claude --dangerously-skip-permissions --resume)
+                fi
             fi
 
             run_agent_container "claude-dev-sandbox:latest" \
