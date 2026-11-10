@@ -22,8 +22,14 @@ fedora:latest
 
 - `bob-sandbox`, `claude-sandbox`, `gemini-sandbox`, `codex-sandbox` – launchers. Each creates a worktree of the current git
   repository on a temporary branch, starts the matching container, and on exit offers to merge the result.
-- `review-pr <pr-number> <bob|gemini|claude|codex> [batch-id]` – checks out a GitHub PR with `gh` and starts the chosen launcher; the optional `batch-id` is passed to the reviewer, which records it as a `batch::` property in its Logseq log so related reviews can be grouped into a batch
-  with a prompt to review the branch.
+- `review-pr [--batch <batch-id>] [--non-interactive] <pr-number> <bob|gemini|claude|codex>` – checks out a GitHub PR
+  with `gh` and starts the chosen launcher with a prompt to review the branch.
+  - `--batch <batch-id>` (letters, digits, `.`, `_`, `-`) tells the reviewer to record it as a `batch::` property in its
+    Logseq log, so related reviews can be grouped.
+  - `--non-interactive` runs the review unattended: the agent runs headless (`claude -p`, `gemini -p`, `codex exec`,
+    `bob run`) with no tty, so it can be scripted or run in parallel. Nothing is merged back (the session branch is
+    discarded), and a PR branch that can't be fast-forwarded is an error instead of a delete prompt. Bob needs
+    `BOB_API_KEY` for this.
 - `fix-issue <issue-number> <bob|gemini|claude|codex>` – reads the GitHub issue title with `gh`, creates and checks out a
   branch named `<issue-number>_<short_words_from_title>`, and starts the chosen launcher with a prompt to fix the
   issue using the `fix-github` skill.
@@ -196,7 +202,7 @@ live file and nothing can modify your host config directly.
 
 | Agent | Authentication | Copied in (discarded on exit) | Generated per session |
 |---|---|---|---|
-| Bob | Login saved in `~/.bob/settings/auth-secrets.json` (created or updated on exit, **synced back**) | `~/.bob/{rules,skills}`, `~/.bob/settings/settings.json` | – |
+| Bob | Login saved in `~/.bob/settings/auth-secrets.json` (created or updated on exit, **synced back**); `BOB_API_KEY` for headless `bob run` | `~/.bob/{rules,skills}`, `~/.bob/settings/settings.json` | – |
 | Claude | Vertex AI via gcloud (cache in `$BASE_SANDBOX_DIR/shared_gcloud`), else `ANTHROPIC_*` environment variables (see below) | `~/.claude/{settings.json,skills,CLAUDE.md}`, `~/.claude.json` | `~/.claude/CLAUDE.md` from `rules/` |
 | Gemini | `GEMINI_API_KEY` environment variable | `~/.gemini/{settings.json,.env,skills,policies,GEMINI.md}` | `~/.gemini/GEMINI.md` from `rules/` |
 | Codex | Login saved in `~/.codex/auth.json` (created or updated on exit, **synced back**) | `~/.codex/{config.toml,AGENTS.md}`, `~/.agents/skills` | `~/.codex/AGENTS.md` from `rules/`; `/workspace` marked trusted in `config.toml` |
@@ -213,7 +219,9 @@ launch an agent.
 Only these authentication setups are supported out of the box. Other modes (Claude or Gemini OAuth/browser
 logins, other Bob auth methods, ...) are not wired up; adapt the launchers if you use them.
 
-- **Bob:** `auth-secrets.json` is copied into the session if it exists, and `bob-sandbox` starts either way. If it
+- **Bob:** `BOB_API_KEY`, if exported on the host, is forwarded into the container by name. It is only needed for
+  headless runs (`review-pr --non-interactive`, `bob-sandbox run ...`), because `bob run` does not use the saved login.
+  `auth-secrets.json` is copied into the session if it exists, and `bob-sandbox` starts either way. If it
   doesn't exist yet, log in at Bob's prompt. When the session ends, the exit trap (`_sync_auth_back` in
   `bin/common-sandbox.sh`) writes the file back to the host if Bob created or changed it (a first login or a token
   refresh), creating `~/.bob/settings` if needed. Unchanged files are left alone. The write is atomic and keeps the
@@ -306,10 +314,11 @@ Notes:
 | Variable | Default | Purpose |
 |---|---|---|
 | `BASE_SANDBOX_DIR` | `~/.local/share/llm_sandbox_homes` | Session homes, worktrees, shared Maven/gcloud caches |
+| `BOB_API_KEY` | – | Bob API key, required for headless `bob run` (`review-pr --non-interactive`); forwarded to the Bob container |
 | `GEMINI_API_KEY` | – | Gemini authentication; forwarded to the Gemini container |
 | `CLAUDE_VERTEX_PROJECT_ID` | – | Claude authentication: Google Cloud project ID for Vertex AI. See [Setting the Vertex project](#setting-the-vertex-project) |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | – | Claude authentication when `CLAUDE_VERTEX_PROJECT_ID` is unset; all `ANTHROPIC_*` variables are forwarded |
 | `LLM_SANDBOX_BACKEND` | auto | Force the container runtime: `podman` or `docker` (default: podman if running, else docker) |
 
-Bob needs no environment variable: log in at its prompt on first run and `~/.bob/settings/auth-secrets.json` is
+Interactive Bob needs no environment variable: log in at its prompt on first run and `~/.bob/settings/auth-secrets.json` is
 saved on exit. See [What the containers see](#what-the-containers-see) for everything else that is read from the host.

@@ -71,6 +71,11 @@ fi
 
 echo "⚙️ Session home with copied config: $SANDBOX_HOME -> /root"
 
+# SANDBOX_NON_INTERACTIVE=1 (set by review-pr --non-interactive) runs the prompt
+# headless: print the answer and exit.
+CLAUDE_FLAGS=(--dangerously-skip-permissions)
+[ "${SANDBOX_NON_INTERACTIVE:-}" = 1 ] && CLAUDE_FLAGS+=(-p)
+
 # Run container via common-sandbox.sh
 # Everything after '--' is executed as the container command inside the sandbox
 run_agent_container "claude-dev-sandbox:latest" \
@@ -80,5 +85,5 @@ run_agent_container "claude-dev-sandbox:latest" \
             echo "⚙️ Running Vertex AI setup..."
             source /usr/local/bin/claude-setup "$CLAUDE_VERTEX_PROJECT_ID" || exit 1
         fi
-        exec claude --dangerously-skip-permissions "$@"
-    ' -- "$@"
+        exec claude "$@"
+    ' -- "${CLAUDE_FLAGS[@]}" "$@"

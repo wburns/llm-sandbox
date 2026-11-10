@@ -2,16 +2,50 @@
 
 set -euo pipefail
 
-# 1. Validate argument count
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    echo "Error: 2 or 3 arguments required." >&2
-    echo "Usage: $0 <pr-number> <bob|gemini|claude|codex> [batch-id]" >&2
+# 1. Parse options and validate argument count
+USAGE="Usage: $0 [--batch <batch-id>] [--non-interactive] <pr-number> <bob|gemini|claude|codex>"
+BATCH_ID=""
+NON_INTERACTIVE=false
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --batch)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --batch requires a value." >&2
+                echo "$USAGE" >&2
+                exit 1
+            fi
+            BATCH_ID="$2"
+            shift 2
+            ;;
+        --batch=*)
+            BATCH_ID="${1#--batch=}"
+            shift
+            ;;
+        --non-interactive)
+            NON_INTERACTIVE=true
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option '$1'." >&2
+            echo "$USAGE" >&2
+            exit 1
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${#POSITIONAL[@]} -ne 2 ]]; then
+    echo "Error: Exactly 2 arguments required: <pr-number> and <reviewer>." >&2
+    echo "$USAGE" >&2
     exit 1
 fi
 
-PR_NUM="$1"
-REVIEWER="$2"
-BATCH_ID="${3:-}"
+PR_NUM="${POSITIONAL[0]}"
+REVIEWER="${POSITIONAL[1]}"
 
 # 2. Validate PR number is numeric
 if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
@@ -32,6 +66,12 @@ esac
 # Validate optional batch identifier (kept simple so it is safe as a Logseq property value)
 if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "Error: Invalid batch-id '$BATCH_ID'. Allowed characters: letters, digits, '.', '_', '-'" >&2
+    exit 1
+fi
+
+# An unattended Bob run uses 'bob run', which only works with an API key
+if [[ "$NON_INTERACTIVE" == true && "$REVIEWER" == bob && -z "${BOB_API_KEY:-}" ]]; then
+    echo "Error: --non-interactive with bob needs BOB_API_KEY set (the saved bob login is not used by 'bob run')." >&2
     exit 1
 fi
 
@@ -56,6 +96,10 @@ echo "Checking out PR #${PR_NUM}..."
 if ! CHECKOUT_OUTPUT="$(gh pr checkout "$PR_NUM" 2>&1)"; then
     echo "$CHECKOUT_OUTPUT" >&2
     if echo "$CHECKOUT_OUTPUT" | grep -qiE 'fast[- ]?forward'; then
+        if [[ "$NON_INTERACTIVE" == true ]]; then
+            echo "Error: Branch '${BRANCH}' could not be fast-forwarded. Not deleting it in --non-interactive mode; fix or delete it and retry." >&2
+            exit 1
+        fi
         read -r -p "Branch '${BRANCH}' could not be fast-forwarded. Delete branch and check it out again? [y/N] " CONFIRM
         if [[ "$CONFIRM" =~ ^[yY]([eE][sS])?$ ]]; then
             echo "Deleting branch '${BRANCH}' and checking it out again..."
@@ -89,4 +133,9 @@ if [[ -n "$BATCH_ID" ]]; then
     PROMPT+=" This review is part of the review batch '${BATCH_ID}'. In the Logseq log you write, record this batch identifier as a property on the top-level review block (batch:: ${BATCH_ID}) so reviews in the same batch can be found and compared together."
 fi
 echo "Executing: $EXECUTABLE \"$PROMPT\""
-SANDBOX_RESTORE_REF="$ORIGINAL_REF" "$EXECUTABLE" "$PROMPT"
+if [[ "$NON_INTERACTIVE" == true ]]; then
+    # Headless run, no tty, no merge-back prompt (see SANDBOX_NON_INTERACTIVE in common-sandbox.sh)
+    SANDBOX_NON_INTERACTIVE=1 SANDBOX_RESTORE_REF="$ORIGINAL_REF" "$EXECUTABLE" "$PROMPT"
+else
+    SANDBOX_RESTORE_REF="$ORIGINAL_REF" "$EXECUTABLE" "$PROMPT"
+fi

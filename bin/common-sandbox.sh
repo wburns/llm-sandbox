@@ -381,7 +381,12 @@ _cleanup_and_merge_prompt() {
         git -C "$MAIN_REPO_DIR" log --oneline "${INITIAL_COMMIT}..${SESSION_COMMIT}"
         echo ""
 
-        read -r -p "👉 Merge changes back into '$CURRENT_BRANCH'? [Y: merge (default) / k: keep branch / n: discard]: " ACTION </dev/tty
+        if [ "${SANDBOX_NON_INTERACTIVE:-}" = 1 ]; then
+            # Unattended run (e.g. review-pr --non-interactive): nobody to ask, never merge.
+            ACTION=n
+        else
+            read -r -p "👉 Merge changes back into '$CURRENT_BRANCH'? [Y: merge (default) / k: keep branch / n: discard]: " ACTION </dev/tty
+        fi
 
         case "$ACTION" in
             ""|[yY][eE][sS]|[yY])
@@ -494,9 +499,12 @@ run_agent_container() {
     fi
     mkdir -p "$SESSION_LOG_DIR"
 
-    # Base flags shared across all tools
+    # Base flags shared across all tools. An unattended run (SANDBOX_NON_INTERACTIVE=1)
+    # gets no tty or stdin, so it works from scripts and in parallel.
+    local tty_flags=(-it)
+    [ "${SANDBOX_NON_INTERACTIVE:-}" = 1 ] && tty_flags=()
     local base_flags=(
-        --rm -it
+        --rm "${tty_flags[@]}"
         --name "$CONTAINER_NAME"
         --label "llm-sandbox.branch=$TEMP_BRANCH"
         --label "llm-sandbox.base-branch=$CURRENT_BRANCH"

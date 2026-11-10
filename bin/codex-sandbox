@@ -42,8 +42,13 @@ TOOL_PODMAN_ARGS=(
     -e CLI_TOOL_NAME="codex"
 )
 
+# SANDBOX_NON_INTERACTIVE=1 (set by review-pr --non-interactive) runs the prompt
+# headless with `codex exec`.
+CODEX_CMD=(codex)
+[ "${SANDBOX_NON_INTERACTIVE:-}" = 1 ] && CODEX_CMD+=(exec)
+
 # Codex's own sandbox can't nest inside the container, which is the sandbox here.
 # Run the container (pass any CLI command arguments, e.g. an initial prompt)
 run_agent_container "codex-dev-sandbox:latest" \
     "${TOOL_PODMAN_ARGS[@]}" \
-    -- codex --dangerously-bypass-approvals-and-sandbox "$@"
+    -- "${CODEX_CMD[@]}" --dangerously-bypass-approvals-and-sandbox "$@"

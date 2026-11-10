@@ -15,12 +15,25 @@ handle_maintenance_flags "$1"
 # BOB_API_KEY, not the saved login). So words that aren't a flag or a bob
 # subcommand are taken as an initial prompt: bob-prompt starts `bob chat` on a
 # pty and types the prompt into it once the UI is ready.
+#
+# SANDBOX_NON_INTERACTIVE=1 (set by review-pr --non-interactive) is the exception:
+# the prompt runs headless as `bob run`, which needs BOB_API_KEY.
 INITIAL_PROMPT=""
 case "${1:-}" in
     "")   set -- chat --auto-approve --trust ;;
     chat) shift; set -- chat --auto-approve --trust "$@" ;;
     -*|run|mcp|acp) ;;
-    *)    INITIAL_PROMPT="$*"; set -- chat --auto-approve --trust ;;
+    *)
+        if [ "${SANDBOX_NON_INTERACTIVE:-}" = 1 ]; then
+            if [ -z "${BOB_API_KEY:-}" ]; then
+                echo "ERROR: a non-interactive Bob run (bob run) needs BOB_API_KEY set; the saved login is not used." >&2
+                exit 1
+            fi
+            set -- run --trust "$*"
+        else
+            INITIAL_PROMPT="$*"; set -- chat --auto-approve --trust
+        fi
+        ;;
 esac
 
 # Bob-specific paths
@@ -48,6 +61,12 @@ fi
 TOOL_PODMAN_ARGS=(
     -e CLI_TOOL_NAME="bob"
 )
+
+# API key auth (needed for `bob run`). Forwarded by name, so the key isn't on the
+# command line.
+if [ -n "${BOB_API_KEY:-}" ]; then
+    TOOL_PODMAN_ARGS+=(-e BOB_API_KEY)
+fi
 
 BOB_CMD=(bob "$@")
 if [ -n "$INITIAL_PROMPT" ]; then
