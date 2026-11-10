@@ -41,7 +41,10 @@ if ! BRANCH="$(gh pr view "$PR_NUM" --json headRefName -q .headRefName 2>/dev/nu
     exit 1
 fi
 
-# 6. Checkout PR branch
+# 6. Checkout PR branch. The starting branch/commit is remembered and handed to the
+# sandbox launcher, which switches back to it once the review worktree is created.
+ORIGINAL_REF="$(git symbolic-ref --short -q HEAD || git rev-parse HEAD)"
+
 echo "Checking out PR #${PR_NUM}..."
 if ! CHECKOUT_OUTPUT="$(gh pr checkout "$PR_NUM" 2>&1)"; then
     echo "$CHECKOUT_OUTPUT" >&2
@@ -76,4 +79,4 @@ fi
 # 8. Run the reviewer command
 PROMPT="Please review the changes in pull request #${PR_NUM} on the current branch. You can query information from PR #${PR_NUM} itself. Note the current branch is a worktree of this PR, so you don't need to fetch from git. Also check existing comments on the PR to confirm if they are correct or not and if additional information should be provided there."
 echo "Executing: $EXECUTABLE \"$PROMPT\""
-"$EXECUTABLE" "$PROMPT"
+SANDBOX_RESTORE_REF="$ORIGINAL_REF" "$EXECUTABLE" "$PROMPT"

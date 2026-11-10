@@ -277,6 +277,14 @@ init_worktree_environment() {
     echo "🌿 Creating worktree at $WORKTREE_DIR based on '$CURRENT_BRANCH'..."
     git worktree add -b "$TEMP_BRANCH" "$WORKTREE_DIR" HEAD
 
+    # A caller (review-pr) can set SANDBOX_RESTORE_REF to have the main repo switched
+    # back to that branch/commit now that the worktree exists, before the agent starts.
+    if [ -n "${SANDBOX_RESTORE_REF:-}" ]; then
+        echo "↩️ Switching '$MAIN_REPO_DIR' back to '$SANDBOX_RESTORE_REF'..."
+        git -C "$MAIN_REPO_DIR" checkout -q "$SANDBOX_RESTORE_REF" ||
+            echo "⚠️ Could not switch back to '$SANDBOX_RESTORE_REF'; '$MAIN_REPO_DIR' remains on '$CURRENT_BRANCH'." >&2
+    fi
+
     # Register exit and interrupt hook
     trap _cleanup_and_merge_prompt EXIT INT TERM
 }
