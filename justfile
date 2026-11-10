@@ -10,7 +10,7 @@ startup:
     {{just}} --justfile {{root}}/justfile update-agent-sandbox
 
 # Build and update the container images (with podman, else docker; see backend/selector.sh).
-# An agent's image is only built when its config directory (~/.bob, ~/.claude, ~/.gemini) exists.
+# An agent's image is only built when its config directory (~/.bob, ~/.claude, ~/.gemini, ~/.codex) exists.
 update-agent-sandbox:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -19,7 +19,7 @@ update-agent-sandbox:
     echo "📦 Container backend: $SANDBOX_BACKEND"
     backend_cli pull docker.io/library/fedora:latest
     backend_cli build -t agent-base-sandbox:latest -f "{{root}}/images/Dockerfile.agent-base" "{{root}}/images"
-    for entry in "bob:${BOB_DIR:-$HOME/.bob}" "gemini:${GEMINI_DIR:-$HOME/.gemini}" "claude:${CLAUDE_DIR:-$HOME/.claude}"; do
+    for entry in "bob:${BOB_DIR:-$HOME/.bob}" "gemini:${GEMINI_DIR:-$HOME/.gemini}" "claude:${CLAUDE_DIR:-$HOME/.claude}" "codex:${CODEX_DIR:-$HOME/.codex}"; do
         agent="${entry%%:*}" dir="${entry#*:}"
         if [ -d "$dir" ]; then
             echo "✅ Found $dir — building $agent-dev-sandbox"

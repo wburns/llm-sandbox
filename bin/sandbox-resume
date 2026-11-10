@@ -98,6 +98,10 @@ render_preview() {
         echo "📂 Gemini Session State:"
         find "$sdir/.gemini" -maxdepth 2 -not -path '*/.*' 2>/dev/null | head -n 15 | sed 's/^/  /'
         echo ""
+    elif [ "$agent" = "codex" ] && [ -d "$sdir/.codex" ]; then
+        echo "📂 Codex Session State:"
+        find "$sdir/.codex" -maxdepth 2 -not -path '*/.*' 2>/dev/null | head -n 15 | sed 's/^/  /'
+        echo ""
     fi
 
     # Show Logseq run logs if any exist for this session
@@ -412,6 +416,26 @@ case "$AGENT" in
         run_agent_container "gemini-dev-sandbox:latest" \
             "${TOOL_PODMAN_ARGS[@]}" \
             -- "${GEMINI_INVOKE[@]}"
+        ;;
+
+    codex)
+        TOOL_PODMAN_ARGS=(
+            -e CLI_TOOL_NAME="codex"
+        )
+        seed_auth_from_host "$HOME/.codex" "$SANDBOX_HOME/.codex" auth.json
+        # Trust the throwaway workspace (already there unless the session was unpacked)
+        grep -qs '^\[projects."/workspace"\]' "$SANDBOX_HOME/.codex/config.toml" ||
+            printf '\n[projects."/workspace"]\ntrust_level = "trusted"\n' >> "$SANDBOX_HOME/.codex/config.toml"
+
+        if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
+            CODEX_INVOKE=("${PASSED_CMD[@]}")
+        else
+            CODEX_INVOKE=(codex --dangerously-bypass-approvals-and-sandbox resume --last)
+        fi
+
+        run_agent_container "codex-dev-sandbox:latest" \
+            "${TOOL_PODMAN_ARGS[@]}" \
+            -- "${CODEX_INVOKE[@]}"
         ;;
 
     *)

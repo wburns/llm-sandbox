@@ -9,7 +9,7 @@ MAX_CHARS=50
 # 1. Validate argument count
 if [[ $# -ne 2 ]]; then
     echo "Error: Exactly 2 arguments required." >&2
-    echo "Usage: $0 <issue-number> <bob|gemini|claude>" >&2
+    echo "Usage: $0 <issue-number> <bob|gemini|claude|codex>" >&2
     exit 1
 fi
 
@@ -24,10 +24,10 @@ fi
 
 # 3. Validate agent value
 case "$FIXER" in
-    bob|gemini|claude)
+    bob|gemini|claude|codex)
         ;;
     *)
-        echo "Error: Invalid agent '$FIXER'. Allowed options: bob, gemini, claude" >&2
+        echo "Error: Invalid agent '$FIXER'. Allowed options: bob, gemini, claude, codex" >&2
         exit 1
         ;;
 esac

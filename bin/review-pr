@@ -5,7 +5,7 @@ set -euo pipefail
 # 1. Validate argument count
 if [[ $# -ne 2 ]]; then
     echo "Error: Exactly 2 arguments required." >&2
-    echo "Usage: $0 <pr-number> <bob|gemini|claude>" >&2
+    echo "Usage: $0 <pr-number> <bob|gemini|claude|codex>" >&2
     exit 1
 fi
 
@@ -20,10 +20,10 @@ fi
 
 # 3. Validate reviewer value
 case "$REVIEWER" in
-    bob|gemini|claude)
+    bob|gemini|claude|codex)
         ;;
     *)
-        echo "Error: Invalid reviewer '$REVIEWER'. Allowed options: bob, gemini, claude" >&2
+        echo "Error: Invalid reviewer '$REVIEWER'. Allowed options: bob, gemini, claude, codex" >&2
         exit 1
         ;;
 esac

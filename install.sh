@@ -7,10 +7,10 @@
 #     $INSTALL_DIR. The launchers seed every sandbox session with the rules/ and
 #     skills/ found there; the agent config directories below are layered on top.
 #   - symlinks the commands into $BIN_DIR: review-pr, fix-issue, sandbox-attach and
-#     common-sandbox always, and bob-sandbox, claude-sandbox, gemini-sandbox only for
-#     agents whose config directory ($BOB_DIR, $CLAUDE_DIR, $GEMINI_DIR) exists
+#     common-sandbox always, and bob-sandbox, claude-sandbox, gemini-sandbox, codex-sandbox only for
+#     agents whose config directory ($BOB_DIR, $CLAUDE_DIR, $GEMINI_DIR, $CODEX_DIR) exists
 #   - unless --no-agent-config is given, also copies the shared rules/ and skills/
-#     into the config directory of each agent ($BOB_DIR, $CLAUDE_DIR, $GEMINI_DIR)
+#     into the config directory of each agent ($BOB_DIR, $CLAUDE_DIR, $GEMINI_DIR, $CODEX_DIR)
 #     that already exists, so host-side runs of those tools pick them up. Agents
 #     without a config directory are skipped. Files with the same name are
 #     overwritten, other files are left alone. claude-sandbox and gemini-sandbox
@@ -27,6 +27,7 @@
 #   BOB_DIR      default: $HOME/.bob
 #   CLAUDE_DIR   default: $HOME/.claude
 #   GEMINI_DIR   default: $HOME/.gemini
+#   CODEX_DIR    default: $HOME/.codex
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +37,7 @@ UNIT_DIR="${UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 BOB_DIR="${BOB_DIR:-$HOME/.bob}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 GEMINI_DIR="${GEMINI_DIR:-$HOME/.gemini}"
+CODEX_DIR="${CODEX_DIR:-$HOME/.codex}"
 SERVICE_NAME="llm-sandbox-update.service"
 
 # command name -> script in bin/
@@ -43,6 +45,7 @@ LINKS=(
     "bob-sandbox:bob-sandbox"
     "claude-sandbox:claude-sandbox"
     "gemini-sandbox:gemini-sandbox"
+    "codex-sandbox:codex-sandbox"
     "review-pr:review-pr"
     "fix-issue:fix-issue"
     "common-sandbox:common-sandbox.sh"
@@ -56,6 +59,7 @@ AGENTS=(
     "bob:$BOB_DIR"
     "claude:$CLAUDE_DIR"
     "gemini:$GEMINI_DIR"
+    "codex:$CODEX_DIR"
 )
 
 UNINSTALL=false
@@ -177,7 +181,7 @@ install() {
         fi
     done
     if [ "${#found_agents[@]}" -eq 0 ]; then
-        item "$WARN" "no agents" "create ~/.claude, ~/.gemini or ~/.bob and re-run to get a launcher"
+        item "$WARN" "no agents" "create ~/.claude, ~/.gemini, ~/.codex or ~/.bob and re-run to get a launcher"
     fi
 
     # --- 3. Files ---

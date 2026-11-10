@@ -1,7 +1,7 @@
 # llm-sandbox
 
 Run LLM coding agents ([IBM Bob](https://bob.ibm.com), [Claude Code](https://claude.com/claude-code),
-[Gemini CLI](https://github.com/google-gemini/gemini-cli)) in **ephemeral Podman (or Docker) containers**, each working in its
+[Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenAI Codex](https://learn.chatgpt.com/docs/codex/cli)) in **ephemeral Podman (or Docker) containers**, each working in its
 own throw-away **git worktree**. When the session ends you choose whether to merge the agent's commits back,
 keep the branch, or discard everything.
 
@@ -16,14 +16,15 @@ fedora:latest
    └── agent-base-sandbox   (JDK, Maven, Node, git, gh, podman, ripwire)
           ├── bob-dev-sandbox
           ├── claude-dev-sandbox
+          ├── codex-dev-sandbox
           └── gemini-dev-sandbox
 ```
 
-- `bob-sandbox`, `claude-sandbox`, `gemini-sandbox` – launchers. Each creates a worktree of the current git
+- `bob-sandbox`, `claude-sandbox`, `gemini-sandbox`, `codex-sandbox` – launchers. Each creates a worktree of the current git
   repository on a temporary branch, starts the matching container, and on exit offers to merge the result.
-- `review-pr <pr-number> <bob|gemini|claude>` – checks out a GitHub PR with `gh` and starts the chosen launcher
+- `review-pr <pr-number> <bob|gemini|claude|codex>` – checks out a GitHub PR with `gh` and starts the chosen launcher
   with a prompt to review the branch.
-- `fix-issue <issue-number> <bob|gemini|claude>` – reads the GitHub issue title with `gh`, creates and checks out a
+- `fix-issue <issue-number> <bob|gemini|claude|codex>` – reads the GitHub issue title with `gh`, creates and checks out a
   branch named `<issue-number>_<short_words_from_title>`, and starts the chosen launcher with a prompt to fix the
   issue using the `fix-github` skill.
 - `sandbox-attach [<session-branch> | -b <branch>] [command...]` – opens a shell (or runs a command) in `/workspace`
@@ -38,7 +39,7 @@ fedora:latest
   in the preview window.
 - `sandbox-session pack [-a] [-f] [-o <file.zip>] [<session-id>]` / `sandbox-session unpack [-f] <file.zip>` – moves a
   session to another machine. `pack` picks a session the same way `sandbox-resume` does (`fzf` picker or session ID/prefix)
-  and zips **only its conversation history** (bob's `bob.db`, claude's `projects/` and `history.jsonl`, gemini's `tmp/` chats),
+  and zips **only its conversation history** (bob's `bob.db`, claude's `projects/` and `history.jsonl`, gemini's `tmp/` chats, codex's `sessions/` and `history.jsonl`),
   plus `.session-info` and the Logseq run logs. Settings, login files, caches and shell history are never included.
   Copy the zip over and run `unpack`: it restores the history and re-seeds rules, skills and settings from the local machine,
   as a fresh launch would. Then run `sandbox-resume` from inside your checkout of the same repository (the agent logs in
@@ -90,7 +91,7 @@ VM's network, not the Mac's.
 ```bash
 ./install.sh              # install files, symlinks and the systemd user service
 ./install.sh --no-service # skip the systemd service
-./install.sh --no-agent-config # don't copy rules/skills into ~/.bob, ~/.claude, ~/.gemini
+./install.sh --no-agent-config # don't copy rules/skills into ~/.bob, ~/.claude, ~/.gemini, ~/.codex
 ./install.sh --uninstall  # remove everything the installer created
 ```
 
@@ -103,13 +104,13 @@ By default:
 
 - files are copied to `~/.local/share/llm-sandbox`
 - commands are symlinked into `~/.local/bin`: `review-pr`, `fix-issue`, `sandbox-attach` and `common-sandbox`
-  always, and `bob-sandbox` / `claude-sandbox` / `gemini-sandbox` only for agents whose config directory exists
+  always, and `bob-sandbox` / `claude-sandbox` / `gemini-sandbox` / `codex-sandbox` only for agents whose config directory exists
   (a link from an earlier install for an agent that is no longer found is removed)
-- `rules/` and `skills/` are copied into whichever of `~/.bob`, `~/.claude` and `~/.gemini` already exist (under
+- `rules/` and `skills/` are copied into whichever of `~/.bob`, `~/.claude`, `~/.gemini` and `~/.codex` already exist (under
   `rules/` and `skills/`); the installer lists which agents it found and skips the rest
 - the unit is written to `~/.config/systemd/user/llm-sandbox-update.service`
 
-Override with `INSTALL_DIR`, `BIN_DIR`, `UNIT_DIR`, `BOB_DIR`, `CLAUDE_DIR` and `GEMINI_DIR`.
+Override with `INSTALL_DIR`, `BIN_DIR`, `UNIT_DIR`, `BOB_DIR`, `CLAUDE_DIR`, `GEMINI_DIR` and `CODEX_DIR`.
 
 Build the images for the first time (or trigger an update at any time):
 
@@ -129,6 +130,7 @@ Run from inside any git repository:
 bob-sandbox
 claude-sandbox
 gemini-sandbox
+codex-sandbox
 ```
 
 Maintenance (same flags on every launcher and on `common-sandbox`):
@@ -145,8 +147,8 @@ common-sandbox --clean   # wipe all sandbox state and worktrees
   rule `rules/ripwire.md` tells the agent to use it for code exploration. If you don't want it, remove the
   install step from `images/Dockerfile.agent-base` and delete `rules/ripwire.md` before installing.
 - **Default rules and skills are installed for every agent found on the host** (see below).
-- **Agents run with their safety prompts off**: Claude is started with `--dangerously-skip-permissions` and
-  Gemini with `--approval-mode=yolo`. The container and throw-away worktree are the safety boundary.
+- **Agents run with their safety prompts off**: Claude is started with `--dangerously-skip-permissions`,
+  Gemini with `--approval-mode=yolo` and Codex with `--dangerously-bypass-approvals-and-sandbox`. The container and throw-away worktree are the safety boundary.
 - **Containers use host networking** (`--network host`), run as root, and receive your `gh` token as `GH_TOKEN`
   when `gh auth token` works. Your host `~/.config/gh` is not mounted or copied, so `gh` settings such as aliases
   are not available in the container.
@@ -156,7 +158,7 @@ common-sandbox --clean   # wipe all sandbox state and worktrees
 - **Uncommitted work is auto-committed** in the worktree when a session ends, before you are asked whether to
   merge, keep or discard the branch.
 - **Images are rebuilt at every startup** by the systemd user service, which also installs the latest Bob,
-  Claude Code and Gemini CLI at that time.
+  Claude Code, Gemini CLI and Codex CLI at that time.
 
 ### Default rules and skills
 
@@ -197,13 +199,14 @@ live file and nothing can modify your host config directly.
 | Bob | Login saved in `~/.bob/settings/auth-secrets.json` (created or updated on exit, **synced back**) | `~/.bob/{rules,skills}`, `~/.bob/settings/settings.json` | – |
 | Claude | Vertex AI via gcloud (cache in `$BASE_SANDBOX_DIR/shared_gcloud`), else `ANTHROPIC_*` environment variables (see below) | `~/.claude/{settings.json,skills,CLAUDE.md}`, `~/.claude.json` | `~/.claude/CLAUDE.md` from `rules/` |
 | Gemini | `GEMINI_API_KEY` environment variable | `~/.gemini/{settings.json,.env,skills,policies,GEMINI.md}` | `~/.gemini/GEMINI.md` from `rules/` |
+| Codex | Login saved in `~/.codex/auth.json` (created or updated on exit, **synced back**) | `~/.codex/{config.toml,AGENTS.md}`, `~/.agents/skills` | `~/.codex/AGENTS.md` from `rules/`; `/workspace` marked trusted in `config.toml` |
 
 Files that don't exist on the host are skipped.
 
 #### Authentication
 
-An agent's image is built when its config directory (`~/.bob`, `~/.claude`, `~/.gemini`, or `BOB_DIR` /
-`CLAUDE_DIR` / `GEMINI_DIR`) exists, whatever credentials you have: the `just` recipe and the startup service never
+An agent's image is built when its config directory (`~/.bob`, `~/.claude`, `~/.gemini`, `~/.codex`, or `BOB_DIR` /
+`CLAUDE_DIR` / `GEMINI_DIR` / `CODEX_DIR`) exists, whatever credentials you have: the `just` recipe and the startup service never
 check `CLAUDE_VERTEX_PROJECT_ID`, `ANTHROPIC_*`, `GEMINI_API_KEY` or `auth-secrets.json`. These only matter when you
 launch an agent.
 
@@ -235,6 +238,11 @@ logins, other Bob auth methods, ...) are not wired up; adapt the launchers if yo
   forwarded and `gemini-sandbox` still starts without a warning, so Gemini will have no API key. Nothing else needs
   to persist. `settings.json` (which selects the API-key login method) is copied in, but changes made to it inside
   a sandbox are discarded.
+
+- **Codex:** `auth.json` is copied into the session if it exists, and `codex-sandbox` starts either way. If it
+  doesn't exist yet, choose *Sign in with ChatGPT* (or another method) at Codex's prompt. When the session ends, the
+  exit trap writes the file back to the host if Codex created or changed it, exactly as for Bob. `OPENAI_API_KEY` is
+  not forwarded.
 
 ##### Setting the Vertex project
 
@@ -269,19 +277,19 @@ sets a different project than `CLAUDE_VERTEX_PROJECT_ID`, keep the two consisten
 To persist another file a tool writes at login, copy it in with `seed_auth_from_host` instead of `seed_from_host`
 in the matching launcher; it is then synced back on exit (and may be absent on the host the first time).
 
-Still shared with the host (bind-mounted read-write): the shared Maven cache (`~/.m2/repository`, all three) and
+Still shared with the host (bind-mounted read-write): the shared Maven cache (`~/.m2/repository`, all four) and
 Claude's gcloud cache described above.
 
-Claude and Gemini have no rules directory of their own, only a single context file. So `claude-sandbox` and
-`gemini-sandbox` concatenate every `*.md` and `*.txt` file in the host's `~/.claude/rules` / `~/.gemini/rules`
-into `CLAUDE.md` / `GEMINI.md` inside the session home on each launch (see `compile_rules`). The host's own
+Claude, Gemini and Codex have no rules directory of their own, only a single context file. So `claude-sandbox`,
+`gemini-sandbox` and `codex-sandbox` concatenate every `*.md` and `*.txt` file in the host's `~/.claude/rules` /
+`~/.gemini/rules` / `~/.codex/rules` into `CLAUDE.md` / `GEMINI.md` / `AGENTS.md` inside the session home on each launch (see `compile_rules`). The host's own
 `CLAUDE.md` / `GEMINI.md` is never modified; the copy is kept as-is when there are no rule files. Skills are plain
 `SKILL.md` directories that rely on each tool's own skill discovery; the launchers do not process them.
 
 Notes:
 
 - By default `install.sh` also writes to the host: it copies `rules/` and `skills/` into whichever of `~/.bob`,
-  `~/.claude` and `~/.gemini` exist, so host-side runs of those tools pick them up too. Use `--no-agent-config` to leave those directories
+  `~/.claude`, `~/.gemini` and `~/.codex` exist, so host-side runs of those tools pick them up too. Use `--no-agent-config` to leave those directories
   alone; sandboxes still get the rules and skills from the install directory. The launchers never write to those
   directories.
 - Re-running `install.sh` overwrites files with the same name; other files you keep in those directories are

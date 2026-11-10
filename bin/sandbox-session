@@ -181,6 +181,7 @@ do_pack() {
         bob)    history=(.bob/db) ;;
         claude) history=(.claude/projects .claude/history.jsonl) ;;
         gemini) history=(.gemini/tmp .gemini/history .gemini/projects.json) ;;
+        codex)  history=(.codex/sessions .codex/history.jsonl) ;;
         *)
             echo "ERROR: Unknown agent '$agent'." >&2
             exit 1
@@ -220,7 +221,7 @@ do_pack() {
 # seed_session_config <session-home> <agent>
 # The archive holds only conversation history, so give the restored session the
 # same rules, skills and settings a fresh launch would (this mirrors what
-# bob-sandbox / claude-sandbox / gemini-sandbox seed). sandbox-resume does not
+# bob-sandbox / claude-sandbox / gemini-sandbox / codex-sandbox seed). sandbox-resume does not
 # seed anything itself. Bob's login is seeded by sandbox-resume from the host.
 seed_session_config() {
     local home="$1" agent="$2"
@@ -241,6 +242,12 @@ seed_session_config() {
             seed_shipped skills "$home/.gemini/skills"
             seed_from_host "$HOME/.gemini" "$home/.gemini" settings.json .env skills policies GEMINI.md
             compile_rules "$home/.gemini/GEMINI.md" "$SHIPPED_RULES_DIR" "$HOME/.gemini/rules"
+            ;;
+        codex)
+            seed_shipped skills "$home/.agents/skills"
+            seed_from_host "$HOME/.agents" "$home/.agents" skills
+            seed_from_host "$HOME/.codex" "$home/.codex" config.toml AGENTS.md
+            compile_rules "$home/.codex/AGENTS.md" "$SHIPPED_RULES_DIR" "$HOME/.codex/rules"
             ;;
         *)
             echo "ERROR: Unknown agent '$agent'." >&2

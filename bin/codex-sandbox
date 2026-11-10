@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$SCRIPT_DIR/common-sandbox.sh"
+
+handle_maintenance_flags "$1"
+
+# Codex-specific paths
+CODEX_CONFIG_DIR="$HOME/.codex"
+CODEX_RULES_DIR="$CODEX_CONFIG_DIR/rules"
+
+mkdir -p "$CODEX_CONFIG_DIR"
+
+# Initialize worktree environment with prefix 'codex'
+init_worktree_environment "codex"
+
+# Seed the session home (/root) with copies of the host config. The agent works
+# on the copies; the host's ~/.codex is never mounted. Codex reads user skills
+# from ~/.agents/skills. The skills shipped with llm-sandbox go in first; the
+# host's own (if any) are layered on top.
+seed_shipped skills "$SANDBOX_HOME/.agents/skills"
+seed_from_host "$HOME/.agents" "$SANDBOX_HOME/.agents" skills
+seed_from_host "$CODEX_CONFIG_DIR" "$SANDBOX_HOME/.codex" config.toml AGENTS.md
+
+# The login file is synced back to the host on exit, so a login (or token
+# refresh) made in the sandbox persists between runs. It may not exist yet.
+seed_auth_from_host "$CODEX_CONFIG_DIR" "$SANDBOX_HOME/.codex" auth.json
+if [ ! -f "$CODEX_CONFIG_DIR/auth.json" ]; then
+    echo "ℹ️ No $CODEX_CONFIG_DIR/auth.json yet; sign in inside the sandbox and it will be saved when you exit."
+fi
+
+# Rules (shipped, then the host's, which win on a name clash) are compiled into
+# the session's AGENTS.md, replacing the copied one.
+compile_rules "$SANDBOX_HOME/.codex/AGENTS.md" "$SHIPPED_RULES_DIR" "$CODEX_RULES_DIR"
+
+# The workspace is a throwaway worktree inside the container, so always trust it
+# (otherwise Codex asks on every new session).
+printf '\n[projects."/workspace"]\ntrust_level = "trusted"\n' >> "$SANDBOX_HOME/.codex/config.toml"
+
+TOOL_PODMAN_ARGS=(
+    -e CLI_TOOL_NAME="codex"
+)
+
+# Codex's own sandbox can't nest inside the container, which is the sandbox here.
+# Run the container (pass any CLI command arguments, e.g. an initial prompt)
+run_agent_container "codex-dev-sandbox:latest" \
+    "${TOOL_PODMAN_ARGS[@]}" \
+    -- codex --dangerously-bypass-approvals-and-sandbox "$@"

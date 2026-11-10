@@ -1,0 +1,15 @@
+FROM agent-base-sandbox:latest
+
+# Codex runs `ps` to track its background app-server process; Fedora's image lacks it
+RUN dnf install -y -q procps-ng && dnf clean all
+
+# Install the official OpenAI Codex CLI globally via npm
+RUN npm install -g @openai/codex
+
+# Verify the executable is in $PATH (/usr/local/bin or /usr/bin depending on npm prefix)
+RUN command -v codex
+
+WORKDIR /workspace
+
+# Launch straight into Codex
+CMD ["codex"]
