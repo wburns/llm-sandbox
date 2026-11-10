@@ -1,0 +1,12 @@
+# Domains every sandbox may reach over HTTPS when the firewall is on.
+# Add your own in ~/.config/llm-sandbox/allowed-domains or LLM_SANDBOX_ALLOWED_DOMAINS.
+
+# Source hosting
+github.com
+api.github.com
+*.githubusercontent.com
+
+# Build dependencies
+repo.maven.apache.org
+repo1.maven.org
+registry.npmjs.org

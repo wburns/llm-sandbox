@@ -1,0 +1,8 @@
+# OpenAI Codex CLI endpoints. Telemetry hosts are left out; Codex works without them.
+
+# OpenAI API (OPENAI_API_KEY) and login
+api.openai.com
+auth.openai.com
+
+# "Sign in with ChatGPT": model requests and account/usage calls go to chatgpt.com
+chatgpt.com

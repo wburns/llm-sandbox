@@ -1,0 +1,6 @@
+# IBM Bob endpoints (service, IBMid login). All HTTPS on 443.
+# See "Configuring firewall rules for Bob" in the Bob documentation.
+*.us-east.bob.ibm.com
+api.us-east.bob.ibm.com
+login.ibm.com
+myibm.ibm.com

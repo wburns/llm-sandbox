@@ -309,6 +309,32 @@ Notes:
 - The default skills were written for Bob; `code-review`, for example, expects to spawn parallel sub-agents, which
   other tools may support differently.
 
+## Network firewall (experimental)
+
+By default containers use host networking and can reach anything the host can. With `LLM_SANDBOX_FIREWALL=1`
+(all the launchers) the container instead:
+
+- joins a per-session `--internal` network with no route out, and no access to the host's loopback or LAN;
+- reaches the internet only through an HTTPS allowlist proxy ([`share/firewall/proxy.js`](share/firewall/proxy.js))
+  running in a sidecar container, which filters by hostname (no TLS interception), allows only port 443, and refuses
+  hosts that resolve to private or loopback addresses. The container has no DNS of its own, so DNS can't be used to
+  tunnel data out.
+
+```bash
+LLM_SANDBOX_FIREWALL=1 gemini-sandbox
+```
+
+The allowlist is [`share/firewall/common.allow`](share/firewall/common.allow) (GitHub, Maven Central, npm) + the agent's
+own file ([`bob.allow`](share/firewall/bob.allow), [`claude.allow`](share/firewall/claude.allow),
+[`codex.allow`](share/firewall/codex.allow) or [`gemini.allow`](share/firewall/gemini.allow)) + `~/.config/llm-sandbox/allowed-domains`
+(one host per line; `*.example.com` allows subdomains; `#` comments) + `LLM_SANDBOX_ALLOWED_DOMAINS`. When the session
+ends, the hosts the proxy refused are listed so you can tell what to add. If you use `ANTHROPIC_BASE_URL` or another
+gateway, add its host yourself.
+
+Limitations: only HTTPS works (no `ssh://` git remotes, no raw TCP); anything the container reached on the host's
+loopback (e.g. a local gateway) is unreachable; an allowed host can still be used to send data out (e.g. to a GitHub
+gist), so this limits where the agent can talk, not what it can send there; and `sandbox-resume` does not enable it yet.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -319,6 +345,8 @@ Notes:
 | `CLAUDE_VERTEX_PROJECT_ID` | – | Claude authentication: Google Cloud project ID for Vertex AI. See [Setting the Vertex project](#setting-the-vertex-project) |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | – | Claude authentication when `CLAUDE_VERTEX_PROJECT_ID` is unset; all `ANTHROPIC_*` variables are forwarded |
 | `LLM_SANDBOX_BACKEND` | auto | Force the container runtime: `podman` or `docker` (default: podman if running, else docker) |
+| `LLM_SANDBOX_FIREWALL` | – | Set to `1` to restrict the container's network to an HTTPS allowlist (**experimental**). See [Network firewall](#network-firewall-experimental) |
+| `LLM_SANDBOX_ALLOWED_DOMAINS` | – | Extra hosts to allow when the firewall is on (comma or space separated) |
 
 Interactive Bob needs no environment variable: log in at its prompt on first run and `~/.bob/settings/auth-secrets.json` is
 saved on exit. See [What the containers see](#what-the-containers-see) for everything else that is read from the host.

@@ -241,6 +241,93 @@ _sync_logseq_logs() {
     return 0
 }
 
+# --- 2f. Network Firewall (opt-in: LLM_SANDBOX_FIREWALL=1) ---
+# By default containers use the host's network. With the firewall on, the agent
+# container joins a per-session --internal network (no route to anywhere) and
+# its only way out is an HTTPS allowlist proxy (share/firewall/proxy.js) running
+# in a sidecar container attached to that network and a normal one. The
+# allowlist is share/firewall/common.allow + <agent>.allow + the user's own
+# (~/.config/llm-sandbox/allowed-domains, LLM_SANDBOX_ALLOWED_DOMAINS). Only
+# agents that have a share/firewall/<agent>.allow file are supported.
+FIREWALL_NETWORK=""
+FIREWALL_OUTBOUND_NETWORK=""
+FIREWALL_PROXY=""
+FIREWALL_ALLOWLIST=""
+
+# start_firewall <image>
+# Creates the network and starts the proxy, using <image> (it needs node).
+# Sets FIREWALL_NETWORK, which run_agent_container then uses. Needs AGENT_PREFIX.
+start_firewall() {
+    local image="$1"
+    local fw_dir
+    fw_dir="$(cd "$_COMMON_SANDBOX_DIR/../share/firewall" && pwd)"
+    local user_allow="${XDG_CONFIG_HOME:-$HOME/.config}/llm-sandbox/allowed-domains"
+
+    if [ ! -f "$fw_dir/$AGENT_PREFIX.allow" ]; then
+        echo "ERROR: LLM_SANDBOX_FIREWALL is set but the firewall doesn't support '$AGENT_PREFIX' yet" >&2
+        echo "       (no $fw_dir/$AGENT_PREFIX.allow). Unset it to run with host networking." >&2
+        exit 1
+    fi
+
+    mkdir -p "$BASE_SANDBOX_DIR/firewall"
+    FIREWALL_ALLOWLIST="$(mktemp "$BASE_SANDBOX_DIR/firewall/allow.XXXXXX")"
+    {
+        cat "$fw_dir/common.allow" "$fw_dir/$AGENT_PREFIX.allow"
+        [ -f "$user_allow" ] && cat "$user_allow"
+        printf '%s\n' "${LLM_SANDBOX_ALLOWED_DOMAINS//[, ]/$'\n'}"
+    } > "$FIREWALL_ALLOWLIST"
+
+    local net="${CONTAINER_NAME}-net" out="${CONTAINER_NAME}-out" proxy="${CONTAINER_NAME}-fw"
+    echo "🛡️ Starting network firewall ($(grep -cvE '^\s*(#|$)' "$FIREWALL_ALLOWLIST") allowed hosts)..."
+    backend_cli network create --internal "$net" >/dev/null || { echo "ERROR: could not create network $net" >&2; exit 1; }
+    FIREWALL_NETWORK="$net"
+    # The proxy's way out. (Not the runtime's default network: rootless podman's
+    # default is pasta, which can't be combined with a second network.)
+    backend_cli network create "$out" >/dev/null || { echo "ERROR: could not create network $out" >&2; exit 1; }
+    FIREWALL_OUTBOUND_NETWORK="$out"
+
+    # Created on the outbound network, then joined to the internal one, because
+    # docker can't attach two networks in `run`.
+    adapt_run_options -v "$fw_dir":/firewall:ro,z -v "$FIREWALL_ALLOWLIST":/allowlist:ro,z
+    if ! backend_cli create --rm --name "$proxy" --network "$out" "${ADAPTED_RUN_OPTIONS[@]}" "$image" \
+            node /firewall/proxy.js 3128 /allowlist >/dev/null ||
+       ! backend_cli network connect "$net" "$proxy" ||
+       ! backend_cli start "$proxy" >/dev/null; then
+        echo "ERROR: could not start the firewall proxy." >&2
+        FIREWALL_PROXY="$proxy"
+        exit 1
+    fi
+    FIREWALL_PROXY="$proxy"
+
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        backend_cli logs "$proxy" 2>&1 | grep -q '^listening' && return 0
+        sleep 0.5
+    done
+    echo "ERROR: the firewall proxy did not start:" >&2
+    backend_cli logs "$proxy" >&2 || true
+    exit 1
+}
+
+# stop_firewall - lists what the proxy refused (to help tune the allowlist),
+# then removes the proxy, the network and the generated allowlist.
+stop_firewall() {
+    [ -n "$FIREWALL_NETWORK$FIREWALL_OUTBOUND_NETWORK$FIREWALL_PROXY$FIREWALL_ALLOWLIST" ] || return 0
+    if [ -n "$FIREWALL_PROXY" ]; then
+        local denied
+        denied="$(backend_cli logs "$FIREWALL_PROXY" 2>&1 | grep '^DENY' | sort | uniq -c | sort -rn)"
+        if [ -n "$denied" ]; then
+            echo "🛡️ Requests blocked by the firewall (add hosts to $HOME/.config/llm-sandbox/allowed-domains to allow):"
+            echo "$denied" | sed 's/^/   /'
+        fi
+        backend_cli rm -f "$FIREWALL_PROXY" >/dev/null 2>&1 || true
+    fi
+    [ -z "$FIREWALL_NETWORK" ] || backend_cli network rm -f "$FIREWALL_NETWORK" >/dev/null 2>&1 || true
+    [ -z "$FIREWALL_OUTBOUND_NETWORK" ] || backend_cli network rm -f "$FIREWALL_OUTBOUND_NETWORK" >/dev/null 2>&1 || true
+    [ -z "$FIREWALL_ALLOWLIST" ] || rm -f "$FIREWALL_ALLOWLIST"
+    FIREWALL_NETWORK="" FIREWALL_OUTBOUND_NETWORK="" FIREWALL_PROXY="" FIREWALL_ALLOWLIST=""
+}
+
 # --- 3. Worktree & Workspace Initialization ---
 init_worktree_environment() {
     local agent_prefix="${1:-agent}"
@@ -359,6 +446,7 @@ EOF
 # --- 4. Interactive Exit & Merge Trap Handler ---
 _cleanup_and_merge_prompt() {
     set +e
+    stop_firewall
     _sync_auth_back
     _sync_logseq_logs
 
@@ -499,16 +587,34 @@ run_agent_container() {
     fi
     mkdir -p "$SESSION_LOG_DIR"
 
-    # Base flags shared across all tools. An unattended run (SANDBOX_NON_INTERACTIVE=1)
+    # An unattended run (SANDBOX_NON_INTERACTIVE=1)
     # gets no tty or stdin, so it works from scripts and in parallel.
     local tty_flags=(-it)
     [ "${SANDBOX_NON_INTERACTIVE:-}" = 1 ] && tty_flags=()
+
+    # Firewall (opt-in): the agent gets an internal network and a proxy to the allowlist
+    local network=host proxy_flags=()
+    if [ "${LLM_SANDBOX_FIREWALL:-0}" = 1 ]; then
+        select_backend || exit 1
+        start_firewall "$image_name"
+        network="$FIREWALL_NETWORK"
+        local proxy_url="http://$FIREWALL_PROXY:3128"
+        proxy_flags=(
+            -e HTTPS_PROXY="$proxy_url" -e https_proxy="$proxy_url"
+            -e HTTP_PROXY="$proxy_url" -e http_proxy="$proxy_url"
+            -e NO_PROXY="localhost,127.0.0.1" -e no_proxy="localhost,127.0.0.1"
+            -e NODE_USE_ENV_PROXY=1  # Node's fetch ignores the proxy variables without this
+        )
+    fi
+
+    # Base flags shared across all tools
     local base_flags=(
         --rm "${tty_flags[@]}"
         --name "$CONTAINER_NAME"
         --label "llm-sandbox.branch=$TEMP_BRANCH"
         --label "llm-sandbox.base-branch=$CURRENT_BRANCH"
-        --network host
+        --network "$network"
+        "${proxy_flags[@]}"
         --tz=local
         -e TERM="${TERM:-xterm-256color}"
         -e COLORTERM="${COLORTERM:-truecolor}"
