@@ -479,6 +479,10 @@ run_agent_container() {
         shift
     done
 
+    # Git configuration
+    seed_from_host "$HOME" "$SANDBOX_HOME" .gitconfig
+    seed_from_host "$HOME/.config" "$SANDBOX_HOME/.config" git
+
     HOST_GH_TOKEN=$(gh auth token 2>/dev/null || true)
 
     # logseq-tracker: mount the installed copy read-only (never one found in the

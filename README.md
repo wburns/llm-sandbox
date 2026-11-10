@@ -150,6 +150,7 @@ common-sandbox --clean   # wipe all sandbox state and worktrees
 - **Containers use host networking** (`--network host`), run as root, and receive your `gh` token as `GH_TOKEN`
   when `gh auth token` works. Your host `~/.config/gh` is not mounted or copied, so `gh` settings such as aliases
   are not available in the container.
+- **Your git configuration is copied in**: `~/.gitconfig` and `~/.config/git`.
 - **The toolchain is Java-centric**: Fedora base image with the latest OpenJDK, Maven, Node.js/npm, git, gh and
   podman, plus a Maven cache shared between sessions.
 - **Uncommitted work is auto-committed** in the worktree when a session ends, before you are asked whether to
