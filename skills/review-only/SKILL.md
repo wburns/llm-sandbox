@@ -32,9 +32,24 @@ Use the current branch name as `--ref`, and `review-only` as the action:
 logseq-tracker init --ref "<BRANCH>" --action review-only --repo "<OWNER/REPO or directory name>" --title "Review of <BRANCH>"
 ```
 
-If `logseq-tracker` is missing, say so, and print the findings in the same Logseq format by hand (see step 4).
+If `logseq-tracker` is missing, say so, and print the findings in the same Logseq format by hand (see step 5).
 
-## 3. Review
+## 3. Understand the intent
+
+Before looking for problems, work out what the PR is trying to do and whether that matches the originally logged issue, and record it in the log so a later reader can review the changes with that context:
+
+1. Find the issue. For a PR, check its description and linked issues (`gh pr view --json title,body,closingIssuesReferences`); otherwise check the commit messages and branch name for an issue reference (`#123`, `fixes 123`). Read it with `gh issue view <N>`. If there is no linked issue, say so.
+2. Break down what the PR is attempting to do and why, in a few plain-language points about its goals and approach (not a file-by-file list), and log each point:
+
+   `logseq-tracker update --ref "<BRANCH>" --action review-only --change "<what the PR is trying to achieve, or the approach it takes>"`
+
+3. Compare that with the issue's request: is every part of the issue addressed, and does the PR do anything the issue did not ask for (scope creep)? Log the conclusion, starting with `matches`, `partially matches`, `does not match` or `no linked issue`, then a short reason:
+
+   `logseq-tracker update --ref "<BRANCH>" --action review-only --intent-match "<verdict> #<N> - <reason>"`
+
+Also log any gap as a finding in step 4 (an unaddressed part of the issue, or an unrelated change).
+
+## 4. Review
 
 Go through the diff file by file. Look for: bugs and logic errors, unhandled errors and edge cases, resource leaks, concurrency problems, security issues (injection, secrets, unsafe input), broken or missing tests, and violations of documented repo standards (`CONTRIBUTING.md`, `CODING_STANDARDS.md`, etc.). Only review lines this branch changed (and what they directly affect).
 
@@ -72,7 +87,7 @@ To correct or drop a finding you already logged (the number is printed as `Added
 `logseq-tracker update --ref "<BRANCH>" --action review-only --edit N --finding "path/file.ext:42 <corrected text>" [--severity <level>]`
 `logseq-tracker update --ref "<BRANCH>" --action review-only --remove N` (later findings are renumbered)
 
-## 4. Finish and output the log
+## 5. Finish and output the log
 
 ```
 logseq-tracker finish --ref "<BRANCH>" --action review-only --status completed --synopsis "<N findings: x high, y medium, z low>"

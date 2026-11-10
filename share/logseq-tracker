@@ -16,6 +16,8 @@ Usage:
   logseq-tracker update --ref my-branch --action review-only --finding "pkg/a.go:10 nil deref" --severity high
   logseq-tracker update --ref my-branch --action review-fix --resolve 1 --file pkg/a.go
   logseq-tracker update --ref my-branch --action review-only --verify "mvn test: 120 passed, 0 failed"
+  logseq-tracker update --ref my-branch --action review-only --change "Make the cache TTL configurable instead of hard-coded"   (repeatable; one line per goal)
+  logseq-tracker update --ref my-branch --action review-only --intent-match "partially matches #42 - eviction part missing"
   logseq-tracker update --ref my-branch --action review-only --edit 2 --finding "pkg/a.go:10 corrected text" --severity low
   logseq-tracker update --ref my-branch --action review-only --remove 3   (later findings are renumbered)
   logseq-tracker finish --issue 42 --action fix-github --status completed --synopsis "Closed sockets" --branch fix/leak --verify "Tests passing"
@@ -62,6 +64,8 @@ def new_state(ref: str, action: str, repo: str, title: str, synopsis: str) -> di
         "synopsis": synopsis,
         "files": [],
         "findings": [],
+        "changes": [],
+        "intent_match": None,
         "branch": None,
         "verification": None,
         "request": None,
@@ -109,6 +113,13 @@ def render_logseq_markdown(state: dict) -> str:
             f"  - **Title:** {one_line(state['title'])}",
             f"  - **Synopsis:** {one_line(state['synopsis'])}",
         ])
+
+    if state.get("changes"):
+        lines.append("  - **What the PR does:**")
+        for c in state["changes"]:
+            lines.append(f"    - {one_line(c)}")
+    if state.get("intent_match"):
+        lines.append(f"  - **Matches the issue:** {one_line(state['intent_match'])}")
 
     if state.get("findings"):
         lines.append("  - **Findings:**")
@@ -159,6 +170,8 @@ def main():
     p_update.add_argument("--resolve", type=int, default=None, metavar="N",
                           help="mark finding number N as fixed")
     p_update.add_argument("--verify", default=None, help="record what was run to verify and the result (repeatable; each call adds a line)")
+    p_update.add_argument("--change", default=None, help="record one thing the PR is trying to do (repeatable; each call adds a line)")
+    p_update.add_argument("--intent-match", default=None, help="record whether the PR matches the originally logged issue")
     p_update.add_argument("--edit", type=int, default=None, metavar="N",
                           help="change finding N: --finding replaces its text, --severity its severity")
     p_update.add_argument("--remove", type=int, default=None, metavar="N",
@@ -224,6 +237,10 @@ def main():
             state["files"].append(args.file)
         if args.verify:
             add_verification(state, args.verify)
+        if args.change:
+            state.setdefault("changes", []).append(args.change)
+        if args.intent_match:
+            state["intent_match"] = args.intent_match
 
         def check_n(n):
             if not 1 <= n <= len(state["findings"]):
