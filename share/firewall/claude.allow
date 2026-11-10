@@ -1,0 +1,15 @@
+# Claude Code endpoints. Telemetry hosts (statsig.anthropic.com, sentry.io) are left out;
+# Claude works without them. A custom ANTHROPIC_BASE_URL gateway must be added by the user.
+
+# Anthropic API and login
+api.anthropic.com
+console.anthropic.com
+platform.claude.com
+
+# Vertex AI (CLAUDE_VERTEX_PROJECT_ID): API, ADC token refresh, and the quota project
+# lookup done by claude-setup. The region is "global", so no regional hosts are needed.
+aiplatform.googleapis.com
+oauth2.googleapis.com
+www.googleapis.com
+cloudresourcemanager.googleapis.com
+serviceusage.googleapis.com

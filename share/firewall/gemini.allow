@@ -1,0 +1,6 @@
+# Gemini CLI endpoints (API key and Google login). The login page itself is opened
+# in the host browser, so accounts.google.com is not needed here.
+generativelanguage.googleapis.com
+cloudcode-pa.googleapis.com
+oauth2.googleapis.com
+www.googleapis.com
