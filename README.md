@@ -22,7 +22,7 @@ fedora:latest
 
 - `bob-sandbox`, `claude-sandbox`, `gemini-sandbox`, `codex-sandbox` – launchers. Each creates a worktree of the current git
   repository on a temporary branch, starts the matching container, and on exit offers to merge the result.
-- `review-pr <pr-number> <bob|gemini|claude|codex>` – checks out a GitHub PR with `gh` and starts the chosen launcher
+- `review-pr <pr-number> <bob|gemini|claude|codex> [batch-id]` – checks out a GitHub PR with `gh` and starts the chosen launcher; the optional `batch-id` is passed to the reviewer, which records it as a `batch::` property in its Logseq log so related reviews can be grouped into a batch
   with a prompt to review the branch.
 - `fix-issue <issue-number> <bob|gemini|claude|codex>` – reads the GitHub issue title with `gh`, creates and checks out a
   branch named `<issue-number>_<short_words_from_title>`, and starts the chosen launcher with a prompt to fix the

@@ -3,14 +3,15 @@
 set -euo pipefail
 
 # 1. Validate argument count
-if [[ $# -ne 2 ]]; then
-    echo "Error: Exactly 2 arguments required." >&2
-    echo "Usage: $0 <pr-number> <bob|gemini|claude|codex>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "Error: 2 or 3 arguments required." >&2
+    echo "Usage: $0 <pr-number> <bob|gemini|claude|codex> [batch-id]" >&2
     exit 1
 fi
 
 PR_NUM="$1"
 REVIEWER="$2"
+BATCH_ID="${3:-}"
 
 # 2. Validate PR number is numeric
 if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
@@ -27,6 +28,12 @@ case "$REVIEWER" in
         exit 1
         ;;
 esac
+
+# Validate optional batch identifier (kept simple so it is safe as a Logseq property value)
+if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "Error: Invalid batch-id '$BATCH_ID'. Allowed characters: letters, digits, '.', '_', '-'" >&2
+    exit 1
+fi
 
 # 4. Check for gh CLI availability
 if ! command -v gh &>/dev/null; then
@@ -78,5 +85,8 @@ fi
 
 # 8. Run the reviewer command
 PROMPT="Please review the changes in pull request #${PR_NUM} on the current branch. You can query information from PR #${PR_NUM} itself. Note the current branch is a worktree of this PR, so you don't need to fetch from git. Also check existing comments on the PR to confirm if they are correct or not and if additional information should be provided there."
+if [[ -n "$BATCH_ID" ]]; then
+    PROMPT+=" This review is part of the review batch '${BATCH_ID}'. In the Logseq log you write, record this batch identifier as a property on the top-level review block (batch:: ${BATCH_ID}) so reviews in the same batch can be found and compared together."
+fi
 echo "Executing: $EXECUTABLE \"$PROMPT\""
 SANDBOX_RESTORE_REF="$ORIGINAL_REF" "$EXECUTABLE" "$PROMPT"
