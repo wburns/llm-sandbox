@@ -491,7 +491,7 @@ do_resume() {
             if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
                 CODEX_INVOKE=("${PASSED_CMD[@]}")
             else
-                CODEX_INVOKE=(codex --dangerously-bypass-approvals-and-sandbox resume --last)
+                CODEX_INVOKE=(codex --dangerously-bypass-approvals-and-sandbox resume --last --include-non-interactive)
             fi
 
             run_agent_container "codex-dev-sandbox:latest" \
