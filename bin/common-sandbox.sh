@@ -328,6 +328,16 @@ stop_firewall() {
     FIREWALL_NETWORK="" FIREWALL_OUTBOUND_NETWORK="" FIREWALL_PROXY="" FIREWALL_ALLOWLIST=""
 }
 
+# _release_setup_lock - review-pr / fix-issue hold a repository lock (SANDBOX_LOCK_FD)
+# while they change the checkout; drop it now that the worktree exists. (Unlocking
+# explicitly: the caller keeps its own copy of the descriptor open.)
+_release_setup_lock() {
+    [ -n "${SANDBOX_LOCK_FD:-}" ] || return 0
+    flock -u "$SANDBOX_LOCK_FD" 2>/dev/null || true
+    eval "exec $SANDBOX_LOCK_FD>&-"
+    unset SANDBOX_LOCK_FD
+}
+
 # --- 3. Worktree & Workspace Initialization ---
 init_worktree_environment() {
     local agent_prefix="${1:-agent}"
@@ -371,6 +381,8 @@ init_worktree_environment() {
         git -C "$MAIN_REPO_DIR" checkout -q "$SANDBOX_RESTORE_REF" ||
             echo "⚠️ Could not switch back to '$SANDBOX_RESTORE_REF'; '$MAIN_REPO_DIR' remains on '$CURRENT_BRANCH'." >&2
     fi
+
+    _release_setup_lock
 
     # Register exit and interrupt hook
     trap _cleanup_and_merge_prompt EXIT INT TERM

@@ -75,6 +75,17 @@ done
 SHORT="${SHORT:0:MAX_CHARS}"
 BRANCH="${ISSUE_NUM}${SHORT:+_${SHORT}}"
 
+# Parallel runs share this checkout: serialize "check out the branch -> create the
+# worktree" so they neither hit git's index.lock nor build a worktree from
+# another run's branch. The launcher releases the lock (via
+# SANDBOX_LOCK_FD) as soon as its worktree exists. Needs flock (Linux).
+if command -v flock &>/dev/null; then
+    LOCK_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    exec {SANDBOX_LOCK_FD}>"$LOCK_DIR/llm-sandbox.lock"
+    flock -n "$SANDBOX_LOCK_FD" || { echo "Waiting for another sandbox to finish setting up in this repository..."; flock "$SANDBOX_LOCK_FD"; }
+    export SANDBOX_LOCK_FD
+fi
+
 # 9. Create (or switch to) the branch
 if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
     echo "Branch '${BRANCH}' already exists; checking it out..."
