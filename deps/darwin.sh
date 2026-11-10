@@ -24,7 +24,7 @@ check_runtime() {
         "podman machine start"
 }
 check_gh()     { check_command "gh" gh optional "brew install gh" "its token is forwarded into containers"; }
-check_fzf()    { check_command "fzf" fzf optional "brew install fzf" "sandbox-attach picker"; }
+check_fzf()    { check_command "fzf" fzf optional "brew install fzf" "sandbox picker"; }
 
 run_checks "macOS" \
     check_macos_version check_brew check_bash_4 check_git check_just check_runtime check_gh check_fzf

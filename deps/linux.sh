@@ -30,7 +30,7 @@ check_systemd() {
     fi
 }
 check_gh()      { check_command "gh" gh optional "$PKG gh" "its token is forwarded into containers"; }
-check_fzf()     { check_command "fzf" fzf optional "$PKG fzf" "sandbox-attach picker"; }
+check_fzf()     { check_command "fzf" fzf optional "$PKG fzf" "sandbox picker"; }
 
 run_checks "Linux" \
     check_bash_4 check_git check_just check_runtime check_systemd check_gh check_fzf

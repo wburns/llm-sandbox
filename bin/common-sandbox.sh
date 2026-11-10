@@ -423,7 +423,7 @@ init_resume_environment() {
 }
 
 # _save_session_metadata <status>
-# Saves or updates .session-info inside $SANDBOX_HOME for sandbox-resume discovery.
+# Saves or updates .session-info inside $SANDBOX_HOME for `sandbox` session discovery.
 _save_session_metadata() {
     local status="${1:-active}"
     [ -n "${SANDBOX_HOME:-}" ] || return 0

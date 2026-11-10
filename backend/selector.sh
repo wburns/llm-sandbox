@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # backend/selector.sh - pick the container runtime the sandboxes run on.
 #
-# Sourced by common-sandbox.sh, sandbox-attach and the justfile. Each runtime
+# Sourced by common-sandbox.sh, the llm-sandbox command and the justfile. Each runtime
 # lives in backend/<name>/backend.sh and defines:
 #   backend_available   true if the runtime is installed and its service answers
 #   backend_cli ARGS... run the runtime's CLI (run, ps, exec, build, pull, ...)

@@ -1,0 +1,769 @@
+#!/usr/bin/env bash
+# llm-sandbox - Browse, attach to, resume and move sandbox sessions.
+#
+# Usage:
+#   llm-sandbox [options] [<session>] [command...]
+#   llm-sandbox attach [options] [<session>] [command...]
+#   llm-sandbox resume [options] [<session>] [command...]
+#   llm-sandbox pack [-a] [-f] [-o <file.zip>] [<session>]
+#   llm-sandbox unpack [-f] <file.zip>
+#
+# With no subcommand an fzf picker lists the saved sessions (most recent first), with
+# details and the Logseq run logs in the preview window. Keys:
+#   enter    attach if the sandbox is running, resume it otherwise
+#   ctrl-a   attach to the running sandbox (opens a shell, or runs [command...], in /workspace)
+#   ctrl-r   resume the session in a new worktree (runs [command...] instead of the agent)
+# `llm-sandbox attach` lists only running sandboxes and `llm-sandbox resume` all sessions;
+# in both, enter does what the name says. <session> is a session ID (or prefix), a
+# container name or a session branch; if it matches one session no picker is shown.
+#
+# Subcommands:
+#   attach   Open a shell in a running sandbox container.
+#   resume   Resume a closed session with a new on-demand worktree.
+#   pack     Write only a session's conversation history (plus .session-info and the
+#            Logseq run logs) to a zip file (default: ./<session-id>.zip). No settings,
+#            credentials, caches or shell history are copied. The history can still
+#            contain secrets the agent saw: keep the archive private.
+#   unpack   Restore a session from a zip file into this machine's session store and
+#            re-seed rules, skills and settings from this machine, like a fresh launch.
+#            Then run `llm-sandbox resume` from inside your checkout of the repository.
+#
+# Options:
+#   -a, --all        Show sessions across all repositories (default if not in a git repo;
+#                    attach always shows every running sandbox)
+#   -b <branch>      attach: only sandboxes started from <branch>; the rest of the line is the command
+#                    resume: base branch for the new worktree (defaults to the current branch)
+#   --list           Print the sessions to stdout instead of picking one, one per line with
+#                    tab separated columns: session, agent, repository, branch, last active,
+#                    repository directory, state, container, session branch. State is running,
+#                    closed, stale (not closed cleanly) or the recorded status; "-" marks an empty value.
+#   -o <file.zip>    (pack) Output file
+#   -f, --force      (pack, unpack) Overwrite an existing output file / existing session
+#   -h, --help       Show this help message
+set -e
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+source "$SCRIPT_DIR/common-sandbox.sh"
+
+SESSIONS_DIR="$BASE_SANDBOX_DIR/sessions"
+SESSION_LABEL="llm-sandbox.branch"
+BASE_LABEL="llm-sandbox.base-branch"
+PS_FORMAT="{{.Names}}\t{{.Label \"$SESSION_LABEL\"}}\t{{.Label \"$BASE_LABEL\"}}"
+
+usage() {
+    sed -n '2,/^set -e/{/^set -e/!p}' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+}
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+# info_load <session-dir> - reads .session-info into the I_* variables
+info_load() {
+    local k v
+    I_AGENT="" I_REPO_DIR="" I_REPO_NAME="" I_BASE_BRANCH="" I_CREATED_AT=""
+    I_UPDATED_AT="" I_PROMPT="" I_STATUS="" I_CONTAINER=""
+    [ -f "$1/.session-info" ] || return 0
+    while IFS='=' read -r k v || [ -n "$k" ]; do
+        case "$k" in
+            AGENT)           I_AGENT="$v" ;;
+            REPO_DIR)        I_REPO_DIR="$v" ;;
+            REPO_NAME)       I_REPO_NAME="$v" ;;
+            BASE_BRANCH)     I_BASE_BRANCH="$v" ;;
+            CREATED_AT)      I_CREATED_AT="$v" ;;
+            UPDATED_AT)      I_UPDATED_AT="$v" ;;
+            INITIAL_PROMPT)  I_PROMPT="$v" ;;
+            STATUS)          I_STATUS="$v" ;;
+            CONTAINER_NAME)  I_CONTAINER="$v" ;;
+        esac
+    done < "$1/.session-info"
+}
+
+# --- Preview (internal helper used by fzf) ---
+# render_preview <session-id> [<state> [<container>]]
+render_preview() {
+    local target="${1:-}" state="${2:--}" container="${3:--}"
+    # Strip any leading/trailing quotes that may be passed
+    target="${target#\'}"
+    target="${target%\'}"
+    target="${target#\"}"
+    target="${target%\"}"
+
+    local sdir="$target"
+    if [ ! -d "$sdir" ] && [ -d "$SESSIONS_DIR/$target" ]; then
+        sdir="$SESSIONS_DIR/$target"
+    fi
+    if [ ! -d "$sdir" ]; then
+        echo "Session directory not found: $target"
+        return 1
+    fi
+    local sname
+    sname="$(basename "$sdir")"
+    info_load "$sdir"
+    local agent="${I_AGENT:-${sname%%_*}}"
+    local updated_at="$I_UPDATED_AT"
+    [ -n "$updated_at" ] || updated_at="$(date -r "$sdir" +'%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Unknown")"
+    local created_at="${I_CREATED_AT:-$updated_at}"
+    [ "$state" != "-" ] || state="$I_STATUS"
+
+    # Calculate session duration/time used
+    local duration_str="" c_epoch u_epoch diff_s hrs mins secs
+    c_epoch="$(date -d "$created_at" +%s 2>/dev/null || echo 0)"
+    u_epoch="$(date -d "$updated_at" +%s 2>/dev/null || echo 0)"
+    if [ "$c_epoch" -gt 0 ] && [ "$u_epoch" -ge "$c_epoch" ]; then
+        diff_s=$((u_epoch - c_epoch))
+        hrs=$((diff_s / 3600))
+        mins=$(((diff_s % 3600) / 60))
+        secs=$((diff_s % 60))
+        if [ "$hrs" -gt 0 ]; then
+            duration_str="${hrs}h ${mins}m ${secs}s"
+        elif [ "$mins" -gt 0 ]; then
+            duration_str="${mins}m ${secs}s"
+        else
+            duration_str="${secs}s"
+        fi
+    fi
+
+    printf "═══════════════════════════════════════════════════════════════\n"
+    printf "  Session ID:   %s\n" "$sname"
+    printf "  Agent:        %s\n" "$agent"
+    [ -z "$state" ] || printf "  Status:       %s\n" "$state"
+    [ "$container" = "-" ] || printf "  Container:    %s\n" "$container"
+    printf "  Last Active:  %s\n" "$updated_at"
+    printf "  Created:      %s\n" "$created_at"
+    [ -z "$duration_str" ] || printf "  Time Used:    %s\n" "$duration_str"
+    [ -z "$I_REPO_NAME" ] || printf "  Repository:   %s (%s)\n" "$I_REPO_NAME" "${I_REPO_DIR:-unknown}"
+    [ -z "$I_BASE_BRANCH" ] || printf "  Base Branch:  %s\n" "$I_BASE_BRANCH"
+    [ -z "$I_PROMPT" ] || printf "  Initial Task: %s\n" "$I_PROMPT"
+    printf "═══════════════════════════════════════════════════════════════\n\n"
+
+    # Show agent session state / transcripts
+    if [ -d "$sdir/.$agent" ]; then
+        echo "📂 ${agent^} Session State:"
+        find "$sdir/.$agent" -maxdepth 2 -not -path '*/.*' 2>/dev/null | head -n 15 | sed 's/^/  /'
+        echo ""
+    fi
+
+    # Show Logseq run logs if any exist for this session
+    local logseq_dir="$LOGSEQ_LOG_DIR/$sname" l log logs=()
+    if [ -d "$logseq_dir" ]; then
+        for l in "$logseq_dir"/run_*.md; do
+            [ ! -f "$l" ] || logs+=("$l")
+        done
+        if [ "${#logs[@]}" -gt 0 ]; then
+            echo "📝 Logseq Run Logs (${#logs[@]}):"
+            for log in "${logs[@]}"; do
+                echo "  • $(basename "$log")"
+                sed 's/^/    /' "$log"
+            done
+        fi
+    fi
+}
+
+# --- Session discovery ---
+# ROWS holds one tab separated line per session, newest first (no empty fields,
+# "-" stands in): session, agent, repository, base branch, last active,
+# repository directory, state, container, session branch, container's base branch.
+ROWS=()
+
+# row_fields <row> - splits a row into the R_* variables
+row_fields() {
+    IFS=$'\t' read -r R_SNAME R_AGENT R_REPO R_BASE R_UPDATED R_REPO_DIR R_STATE R_CONTAINER R_SBRANCH R_RUNBASE <<<"$1"
+}
+
+load_rows() {
+    ROWS=()
+    local -A run_sbranch=() run_base=()
+    local have_backend=false name sbranch base
+    # No usable runtime is not an error here: nothing is shown as running
+    if select_backend >/dev/null 2>&1; then
+        have_backend=true
+        while IFS=$'\t' read -r name sbranch base; do
+            [ -n "$name" ] || continue
+            run_sbranch[$name]="$sbranch"
+            run_base[$name]="$base"
+        done < <(backend_cli ps --filter "label=$SESSION_LABEL" --format "$PS_FORMAT" 2>/dev/null)
+    fi
+
+    local raw=() sdir sname agent repo base_branch updated epoch state container sb rb
+    for sdir in "$SESSIONS_DIR"/*; do
+        [ -d "$sdir" ] || continue
+        sname="$(basename "$sdir")"
+        info_load "$sdir"
+        agent="${I_AGENT:-${sname%%_*}}"
+        repo="${I_REPO_NAME:-unknown}"
+        base_branch="${I_BASE_BRANCH:--}"
+        updated="$I_UPDATED_AT"
+        [ -n "$updated" ] || updated="$(date -r "$sdir" +'%Y-%m-%d %H:%M:%S' 2>/dev/null || date +'%Y-%m-%d %H:%M:%S')"
+        # Epoch timestamp for numeric reverse sorting (most recent first)
+        epoch="$(date -d "$updated" +%s 2>/dev/null || stat -c %Y "$sdir" 2>/dev/null || echo 0)"
+
+        container="${I_CONTAINER:--}"
+        if [ "$container" != "-" ] && [ -n "${run_sbranch[$container]+x}" ]; then
+            state=running
+            sb="${run_sbranch[$container]:--}"
+            rb="${run_base[$container]:--}"
+        else
+            container=- sb=- rb=-
+            state="${I_STATUS:--}"
+            # active/resumed with no container left means it didn't shut down cleanly
+            if [ "$have_backend" = true ] && { [ "$state" = active ] || [ "$state" = resumed ]; }; then
+                state=stale
+            fi
+        fi
+        raw+=("$epoch"$'\t'"$sname"$'\t'"$agent"$'\t'"$repo"$'\t'"$base_branch"$'\t'"$updated"$'\t'"${I_REPO_DIR:--}"$'\t'"$state"$'\t'"$container"$'\t'"$sb"$'\t'"$rb")
+    done
+
+    local line
+    if [ "${#raw[@]}" -gt 0 ]; then
+        while IFS= read -r line; do
+            [ -z "$line" ] || ROWS+=("${line#*$'\t'}")
+        done < <(printf '%s\n' "${raw[@]}" | sort -t$'\t' -k1,1rn)
+    fi
+    return 0
+}
+
+# narrow_rows - applies MODE, SESSION_ARG, BASE_FILTER and the repository filter to ROWS
+narrow_rows() {
+    local row kept=()
+    for row in "${ROWS[@]}"; do
+        row_fields "$row"
+        if [ "$MODE" = attach ]; then
+            [ "$R_CONTAINER" != "-" ] || continue
+            [ -z "$BASE_FILTER" ] || [ "$R_RUNBASE" = "$BASE_FILTER" ] || continue
+        fi
+        if [ -n "$SESSION_ARG" ]; then
+            [[ "$R_SNAME" == "$SESSION_ARG"* || "$R_CONTAINER" == "$SESSION_ARG" || "$R_SBRANCH" == "$SESSION_ARG" ]] || continue
+        fi
+        kept+=("$row")
+    done
+
+    # Inside a repository, show only its sessions (attach and an explicit session are never filtered)
+    local current_repo=""
+    if [ "$MODE" != attach ] && [ -z "$SESSION_ARG" ] && [ "$SHOW_ALL" = false ] &&
+       git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        current_repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    fi
+    if [ -n "$current_repo" ]; then
+        local in_repo=()
+        for row in "${kept[@]}"; do
+            row_fields "$row"
+            if [ "$R_REPO_DIR" = "$current_repo" ]; then
+                in_repo+=("$row")
+            fi
+        done
+        if [ "${#in_repo[@]}" -gt 0 ] || [ "$LIST" = true ]; then
+            kept=("${in_repo[@]}")
+        elif [ "${#kept[@]}" -gt 0 ]; then
+            echo "ℹ️ No sessions found for current repo ($(basename "$current_repo")). Showing all sessions across repositories." >&2
+        fi
+    fi
+    ROWS_ALL=("${ROWS[@]}")
+    ROWS=("${kept[@]}")
+}
+
+# --- Selection ---
+# fzf_lines - header + one line per row: session, aligned display text, state, container
+fzf_lines() {
+    local table=($'STATE\tAGENT\tREPOSITORY\tBRANCH\tLAST OPERATED\t-\t-') row line i sn
+    local w=(0 0 0 0) c
+    for row in "${ROWS[@]}"; do
+        row_fields "$row"
+        table+=("$R_STATE"$'\t'"$R_AGENT"$'\t'"$R_REPO"$'\t'"$R_BASE"$'\t'"$R_UPDATED"$'\t'"$R_SNAME"$'\t'"$R_CONTAINER")
+    done
+    for line in "${table[@]}"; do
+        IFS=$'\t' read -ra c <<<"$line"
+        for i in 0 1 2 3; do
+            [ "${#c[i]}" -le "${w[i]}" ] || w[i]="${#c[i]}"
+        done
+    done
+    i=0
+    for line in "${table[@]}"; do
+        IFS=$'\t' read -ra c <<<"$line"
+        sn="${c[5]}"
+        [ "$i" -gt 0 ] || sn=""
+        printf '%s\t%-*s  %-*s  %-*s  %-*s  %s\t%s\t%s\n' "$sn" \
+            "${w[0]}" "${c[0]}" "${w[1]}" "${c[1]}" "${w[2]}" "${c[2]}" "${w[3]}" "${c[3]}" \
+            "${c[4]}" "${c[0]}" "${c[6]}"
+        i=$((i + 1))
+    done
+}
+
+# choose_row - sets CHOSEN_ROW (and CHOSEN_KEY, the fzf key pressed, in auto mode)
+choose_row() {
+    CHOSEN_KEY=""
+    CHOSEN_ROW=""
+    if [ "${#ROWS[@]}" -eq 1 ] && { [ "$MODE" != auto ] || [ -n "$SESSION_ARG" ]; }; then
+        CHOSEN_ROW="${ROWS[0]}"
+        return 0
+    fi
+
+    local row
+    if command -v fzf >/dev/null 2>&1; then
+        local help="enter: resume" prompt="llm-sandbox"
+        local args=(--no-sort --delimiter=$'\t' --with-nth=2 --header-lines=1
+            --preview="\"$SCRIPT_PATH\" --preview {1} {3} {4}"
+            --bind='ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up'
+            --preview-window="right:55%:wrap")
+        case "$MODE" in
+            auto)   help="enter: attach if running, else resume   ctrl-a: attach   ctrl-r: resume"
+                    args+=("--expect=ctrl-a,ctrl-r") ;;
+            attach) help="enter: attach"; prompt="llm-sandbox attach" ;;
+            resume) prompt="llm-sandbox resume" ;;
+            pack)   help="enter: pack"; prompt="llm-sandbox pack" ;;
+        esac
+        local out
+        out="$(fzf_lines | fzf "${args[@]}" --prompt="$prompt> " --header="$help")" || exit 1
+        if [ "$MODE" = auto ]; then
+            CHOSEN_KEY="${out%%$'\n'*}"
+            out="${out#*$'\n'}"
+        fi
+        local sname="${out%%$'\t'*}"
+        for row in "${ROWS[@]}"; do
+            row_fields "$row"
+            if [ "$R_SNAME" = "$sname" ]; then
+                CHOSEN_ROW="$row"
+                break
+            fi
+        done
+    else
+        echo "Sessions (install fzf for interactive search and preview):"
+        local options=()
+        for row in "${ROWS[@]}"; do
+            row_fields "$row"
+            options+=("[$R_UPDATED] $R_STATE $R_AGENT - $R_REPO ($R_BASE) [$R_SNAME]")
+        done
+        local opt
+        PS3="Select a session: "
+        select opt in "${options[@]}"; do
+            if [ -n "$opt" ]; then
+                CHOSEN_ROW="${ROWS[$((REPLY - 1))]}"
+                break
+            fi
+        done
+    fi
+    [ -n "$CHOSEN_ROW" ] || die "No session selected."
+}
+
+# --- attach ---
+do_attach() {
+    [ "$R_CONTAINER" != "-" ] || die "Session '$R_SNAME' is not running (use 'llm-sandbox resume')."
+    select_backend || exit 1
+    local cmd=("${CMD[@]}")
+    [ "${#cmd[@]}" -gt 0 ] || cmd=(bash)
+    backend_cli exec -it -w /workspace "$R_CONTAINER" "${cmd[@]}"
+}
+
+# --- resume ---
+do_resume() {
+    [ "$R_CONTAINER" = "-" ] || die "Session '$R_SNAME' is still running in $R_CONTAINER (use 'llm-sandbox attach')."
+    local SESSION_HOME="$SESSIONS_DIR/$R_SNAME" AGENT="$R_AGENT" REPO_DIR=""
+    [ "$R_REPO_DIR" = "-" ] || REPO_DIR="$R_REPO_DIR"
+    [ -d "$SESSION_HOME" ] || die "Session directory $SESSION_HOME does not exist."
+    local PASSED_CMD=("${CMD[@]}")
+
+    # Navigate to target git repository
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        local top_dir
+        top_dir="$(git rev-parse --show-toplevel)"
+        if [ -n "$REPO_DIR" ] && [ "$top_dir" != "$REPO_DIR" ] && [ -d "$REPO_DIR" ]; then
+            echo "📂 Switching to session repository: $REPO_DIR"
+            cd "$REPO_DIR"
+        fi
+    elif [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR" ]; then
+        echo "📂 Switching to session repository: $REPO_DIR"
+        cd "$REPO_DIR"
+    else
+        die "Cannot find git repository '${REPO_DIR:-current directory}'. Please run llm-sandbox resume from inside the target git repository."
+    fi
+
+    # Switch branch if requested
+    if [ -n "$TARGET_BRANCH" ]; then
+        git checkout "$TARGET_BRANCH" 2>/dev/null || git checkout -b "$TARGET_BRANCH"
+    fi
+
+    echo "🔄 Resuming session '$R_SNAME' ($AGENT)..."
+
+    # --- Initialize on-demand worktree & environment ---
+    init_resume_environment "$SESSION_HOME" "$AGENT"
+
+    # --- Launch Container ---
+    case "$AGENT" in
+        claude)
+            local SHARED_GCLOUD_DIR="$BASE_SANDBOX_DIR/shared_gcloud"
+            local CLAUDE_SETUP_PATH
+            CLAUDE_SETUP_PATH="$(cd "$SCRIPT_DIR/../share" && pwd)/claude-setup"
+            local TOOL_PODMAN_ARGS=(
+                -e IS_SANDBOX=1
+                -e CLI_TOOL_NAME="claude"
+                -w /workspace
+            )
+            if [ -n "${CLAUDE_VERTEX_PROJECT_ID:-}" ]; then
+                mkdir -p "$SHARED_GCLOUD_DIR"
+                TOOL_PODMAN_ARGS+=(-v "$SHARED_GCLOUD_DIR":/root/.config/gcloud:z)
+                echo "☁️ Shared gcloud auth cache: $SHARED_GCLOUD_DIR -> /root/.config/gcloud"
+            elif [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+                local ANTHROPIC_VARS=() var
+                while IFS= read -r var; do
+                    ANTHROPIC_VARS+=("$var")
+                    TOOL_PODMAN_ARGS+=(-e "$var")
+                done < <(compgen -e | grep '^ANTHROPIC_' | sort)
+                echo "🔑 Anthropic API auth: forwarding ${ANTHROPIC_VARS[*]}"
+            else
+                echo "⚠️ No Claude credentials: set CLAUDE_VERTEX_PROJECT_ID (Vertex AI) or ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN."
+                echo "   Claude will ask you to log in, and that login is not kept after the session."
+            fi
+
+            if [ -f "$CLAUDE_SETUP_PATH" ]; then
+                TOOL_PODMAN_ARGS+=(-v "$CLAUDE_SETUP_PATH:/usr/local/bin/claude-setup:ro,z")
+            fi
+            if [ -n "${CLAUDE_VERTEX_PROJECT_ID:-}" ]; then
+                TOOL_PODMAN_ARGS+=(-e CLAUDE_VERTEX_PROJECT_ID="$CLAUDE_VERTEX_PROJECT_ID")
+            fi
+
+            local CLAUDE_INVOKE
+            if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
+                CLAUDE_INVOKE=("${PASSED_CMD[@]}")
+            else
+                CLAUDE_INVOKE=(claude --dangerously-skip-permissions --resume)
+            fi
+
+            run_agent_container "claude-dev-sandbox:latest" \
+                "${TOOL_PODMAN_ARGS[@]}" \
+                -- bash -c '
+                    if [ -n "$CLAUDE_VERTEX_PROJECT_ID" ]; then
+                        echo "⚙️ Running Vertex AI setup..."
+                        source /usr/local/bin/claude-setup "$CLAUDE_VERTEX_PROJECT_ID" || exit 1
+                    fi
+                    exec "$@"
+                ' -- "${CLAUDE_INVOKE[@]}"
+            ;;
+
+        bob)
+            local TOOL_PODMAN_ARGS=(
+                -e CLI_TOOL_NAME="bob"
+            )
+            seed_auth_from_host "$HOME/.bob/settings" "$SANDBOX_HOME/.bob/settings" auth-secrets.json
+
+            local BOB_INVOKE
+            if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
+                BOB_INVOKE=("${PASSED_CMD[@]}")
+            else
+                BOB_INVOKE=(bob chat --auto-approve --trust --resume latest)
+            fi
+
+            run_agent_container "bob-dev-sandbox:latest" "${TOOL_PODMAN_ARGS[@]}" -- "${BOB_INVOKE[@]}"
+            ;;
+
+        gemini)
+            local TOOL_PODMAN_ARGS=(
+                -e CLI_TOOL_NAME="gemini"
+                -e GEMINI_CLI_TRUST_WORKSPACE="true"
+            )
+            if [ -n "${GEMINI_API_KEY:-}" ]; then
+                TOOL_PODMAN_ARGS+=(-e GEMINI_API_KEY)
+            fi
+
+            local GEMINI_INVOKE
+            if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
+                GEMINI_INVOKE=("${PASSED_CMD[@]}")
+            else
+                GEMINI_INVOKE=(gemini --approval-mode=yolo --resume latest)
+            fi
+
+            run_agent_container "gemini-dev-sandbox:latest" \
+                "${TOOL_PODMAN_ARGS[@]}" \
+                -- "${GEMINI_INVOKE[@]}"
+            ;;
+
+        codex)
+            local TOOL_PODMAN_ARGS=(
+                -e CLI_TOOL_NAME="codex"
+            )
+            seed_auth_from_host "$HOME/.codex" "$SANDBOX_HOME/.codex" auth.json
+            # Trust the throwaway workspace (already there unless the session was unpacked)
+            grep -qs '^\[projects."/workspace"\]' "$SANDBOX_HOME/.codex/config.toml" ||
+                printf '\n[projects."/workspace"]\ntrust_level = "trusted"\n' >> "$SANDBOX_HOME/.codex/config.toml"
+
+            local CODEX_INVOKE
+            if [ "${#PASSED_CMD[@]}" -gt 0 ]; then
+                CODEX_INVOKE=("${PASSED_CMD[@]}")
+            else
+                CODEX_INVOKE=(codex --dangerously-bypass-approvals-and-sandbox resume --last)
+            fi
+
+            run_agent_container "codex-dev-sandbox:latest" \
+                "${TOOL_PODMAN_ARGS[@]}" \
+                -- "${CODEX_INVOKE[@]}"
+            ;;
+
+        *)
+            die "Unknown agent '$AGENT'."
+            ;;
+    esac
+}
+
+# --- pack ---
+do_pack() {
+    command -v zip >/dev/null 2>&1 || die "'zip' is required."
+    local sname="$R_SNAME" agent="$R_AGENT"
+    local sdir="$SESSIONS_DIR/$sname"
+    local ldir="$LOGSEQ_LOG_DIR/$sname"
+
+    local out="$OUT_FILE"
+    [ -n "$out" ] || out="$sname.zip"
+    out="$(readlink -m "$out")"
+    if [ -e "$out" ] && [ "$FORCE" = false ]; then
+        die "$out already exists (use -f to overwrite)."
+    fi
+    rm -f "$out"
+
+    if [ "$R_STATE" != closed ] && [ "$R_STATE" != "-" ]; then
+        echo "⚠️ Session status is '$R_STATE'; it may still be running or was not closed cleanly."
+    fi
+
+    # Conversation history only, per agent (an allowlist, so new files an agent
+    # starts writing to its config directory are never picked up by accident).
+    local history=()
+    case "$agent" in
+        bob)    history=(.bob/db) ;;
+        claude) history=(.claude/projects .claude/history.jsonl) ;;
+        gemini) history=(.gemini/tmp .gemini/history .gemini/projects.json) ;;
+        codex)  history=(.codex/sessions .codex/history.jsonl) ;;
+        *)      die "Unknown agent '$agent'." ;;
+    esac
+    local paths=("$sname/session/.session-info") p found=false
+    for p in "${history[@]}"; do
+        if [ -e "$sdir/$p" ]; then
+            paths+=("$sname/session/$p")
+            found=true
+        fi
+    done
+    [ "$found" = true ] || die "No $agent conversation history found in $sdir."
+    [ ! -d "$ldir" ] || paths+=("$sname/logs")
+
+    # Stage the session and its logs under one top-level directory <sname>/ so
+    # a single zip can carry both (they live in different directories).
+    stage="$(mktemp -d)"  # (global: the EXIT trap runs after this function has returned)
+    trap 'rm -rf "$stage"' EXIT
+    mkdir "$stage/$sname"
+    ln -s "$sdir" "$stage/$sname/session"
+    [ ! -d "$ldir" ] || ln -s "$ldir" "$stage/$sname/logs"
+
+    echo "📦 Packing session '$sname'..."
+    (cd "$stage" && zip -qr "$out" "${paths[@]}")
+
+    echo "✅ Wrote $out ($(du -h "$out" | cut -f1))"
+    echo "⚠️ Only conversation history is included, but it may contain secrets the agent saw or"
+    echo "   printed. Keep the archive private."
+    echo "   On the other machine: llm-sandbox unpack $(basename "$out")"
+}
+
+# --- unpack ---
+# seed_session_config <session-home> <agent>
+# The archive holds only conversation history, so give the restored session the
+# same rules, skills and settings a fresh launch would (this mirrors what
+# bob-sandbox / claude-sandbox / gemini-sandbox / codex-sandbox seed). llm-sandbox resume does not
+# seed anything itself. Bob's login is seeded by llm-sandbox resume from the host.
+seed_session_config() {
+    local home="$1" agent="$2"
+    case "$agent" in
+        bob)
+            seed_shipped rules "$home/.bob/rules"
+            seed_shipped skills "$home/.bob/skills"
+            seed_from_host "$HOME/.bob" "$home/.bob" rules skills
+            seed_from_host "$HOME/.bob/settings" "$home/.bob/settings" settings.json
+            ;;
+        claude)
+            seed_shipped skills "$home/.claude/skills"
+            seed_from_host "$HOME/.claude" "$home/.claude" settings.json skills CLAUDE.md
+            seed_from_host "$HOME" "$home" .claude.json
+            compile_rules "$home/.claude/CLAUDE.md" "$SHIPPED_RULES_DIR" "$HOME/.claude/rules"
+            ;;
+        gemini)
+            seed_shipped skills "$home/.gemini/skills"
+            seed_from_host "$HOME/.gemini" "$home/.gemini" settings.json .env skills policies GEMINI.md
+            compile_rules "$home/.gemini/GEMINI.md" "$SHIPPED_RULES_DIR" "$HOME/.gemini/rules"
+            ;;
+        codex)
+            seed_shipped skills "$home/.agents/skills"
+            seed_from_host "$HOME/.agents" "$home/.agents" skills
+            seed_from_host "$HOME/.codex" "$home/.codex" config.toml AGENTS.md
+            compile_rules "$home/.codex/AGENTS.md" "$SHIPPED_RULES_DIR" "$HOME/.codex/rules"
+            ;;
+        *)
+            die "Unknown agent '$agent'."
+            ;;
+    esac
+}
+
+do_unpack() {
+    local force=false file=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -f|--force) force=true; shift ;;
+            -h|--help) usage; exit 0 ;;
+            -*) die "Unknown option '$1'." ;;
+            *) file="$1"; shift ;;
+        esac
+    done
+    command -v unzip >/dev/null 2>&1 || die "'unzip' is required."
+    if [ -z "$file" ]; then
+        echo "ERROR: unpack requires a zip file." >&2
+        usage >&2
+        exit 1
+    fi
+    [ -f "$file" ] || die "$file not found."
+
+    tmp="$(mktemp -d)"  # (global: the EXIT trap runs after this function has returned)
+    trap 'rm -rf "$tmp"' EXIT
+    unzip -q "$file" -d "$tmp"
+
+    if [ -n "$(find "$tmp" -type l -print -quit)" ]; then
+        die "$file contains symbolic links; refusing to unpack."
+    fi
+
+    local top=("$tmp"/*)
+    if [ "${#top[@]}" -ne 1 ] || [ ! -f "${top[0]}/session/.session-info" ]; then
+        die "$file is not a sandbox session archive."
+    fi
+    local sname
+    sname="$(basename "${top[0]}")"
+    if [[ ! "$sname" =~ ^[A-Za-z0-9_.-]+$ ]] || [ "$sname" = "." ] || [ "$sname" = ".." ]; then
+        die "Invalid session name '$sname' in archive."
+    fi
+
+    local dest="$SESSIONS_DIR/$sname"
+    if [ -e "$dest" ]; then
+        [ "$force" = true ] || die "Session '$sname' already exists in $SESSIONS_DIR (use -f to replace it)."
+        rm -rf "$dest"
+    fi
+    mkdir -p "$SESSIONS_DIR"
+    mv "${top[0]}/session" "$dest"
+
+    if [ -d "${top[0]}/logs" ]; then
+        mkdir -p "$LOGSEQ_LOG_DIR/$sname"
+        cp -a "${top[0]}/logs/." "$LOGSEQ_LOG_DIR/$sname/"
+    fi
+
+    info_load "$dest"
+    local agent="${I_AGENT:-${sname%%_*}}"
+    seed_session_config "$dest" "$agent"
+    echo "✅ Restored session '$sname' to $dest"
+    echo "   Check out ${I_REPO_NAME:-the repository} on this machine, then run llm-sandbox resume from inside it."
+}
+
+# --- Main ---
+if [ "${1:-}" = "--preview" ]; then
+    render_preview "${2:-}" "${3:-}" "${4:-}"
+    exit 0
+fi
+
+MODE=auto
+case "${1:-}" in
+    attach|resume|pack) MODE="$1"; shift ;;
+    unpack) shift; do_unpack "$@"; exit 0 ;;
+esac
+
+SHOW_ALL=false LIST=false FORCE=false OUT_FILE="" SESSION_ARG="" BASE_FILTER="" TARGET_BRANCH=""
+CMD=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -a|--all) SHOW_ALL=true; shift ;;
+        --list) LIST=true; shift ;;
+        -b)
+            [ -n "${2:-}" ] || die "-b requires a branch name."
+            case "$MODE" in
+                attach) BASE_FILTER="$2" ;;
+                resume) TARGET_BRANCH="$2" ;;
+                *) die "-b needs 'llm-sandbox attach' or 'llm-sandbox resume'." ;;
+            esac
+            shift 2
+            ;;
+        -f|--force)
+            [ "$MODE" = pack ] || die "-f only applies to pack and unpack."
+            FORCE=true
+            shift
+            ;;
+        -o)
+            [ "$MODE" = pack ] || die "-o only applies to pack."
+            [ -n "${2:-}" ] || die "-o requires a file name."
+            OUT_FILE="$2"
+            shift 2
+            ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; CMD=("$@"); break ;;
+        -*) die "Unknown option '$1'." ;;
+        *)
+            SESSION_ARG="$1"
+            shift
+            [ "$MODE" != pack ] || continue
+            CMD=("$@")
+            break
+            ;;
+    esac
+done
+
+# `attach -b <branch> cmd...`: the sandbox is chosen by the branch, so everything after is the command
+if [ -n "$BASE_FILTER" ] && [ -n "$SESSION_ARG" ]; then
+    CMD=("$SESSION_ARG" "${CMD[@]}")
+    SESSION_ARG=""
+fi
+
+if [ "$MODE" = attach ] && [ "$LIST" = false ]; then
+    select_backend || exit 1
+fi
+
+ROWS_ALL=()
+load_rows
+narrow_rows
+
+if [ "$LIST" = true ]; then
+    for row in "${ROWS[@]}"; do
+        printf '%s\n' "$(cut -f1-9 <<<"$row")"
+    done
+    exit 0
+fi
+
+if [ "${#ROWS[@]}" -eq 0 ]; then
+    if [ "$MODE" = attach ]; then
+        what=""
+        [ -z "$BASE_FILTER" ] || what=" started from branch '$BASE_FILTER'"
+        [ -z "$SESSION_ARG" ] || what=" matching '$SESSION_ARG'"
+        echo "ERROR: no running sandbox container found${what}." >&2
+        if [ -n "$what" ]; then
+            running=()
+            for row in "${ROWS_ALL[@]}"; do
+                row_fields "$row"
+                [ "$R_CONTAINER" = "-" ] || running+=("$R_CONTAINER"$'\t'"$R_SBRANCH"$'\t'"$R_RUNBASE")
+            done
+            if [ "${#running[@]}" -gt 0 ]; then
+                echo "Running sandboxes:" >&2
+                { printf 'CONTAINER\tSESSION BRANCH\tBASE BRANCH\n'; printf '%s\n' "${running[@]}"; } | column -t -s $'\t' >&2
+            fi
+        fi
+        exit 1
+    fi
+    [ -z "$SESSION_ARG" ] || die "No saved session matching '$SESSION_ARG' found."
+    die "No saved sessions found in $SESSIONS_DIR."
+fi
+
+choose_row
+row_fields "$CHOSEN_ROW"
+
+action="$MODE"
+if [ "$MODE" = auto ]; then
+    case "$CHOSEN_KEY" in
+        ctrl-a) action=attach ;;
+        ctrl-r) action=resume ;;
+        *)      if [ "$R_CONTAINER" != "-" ]; then action=attach; else action=resume; fi ;;
+    esac
+fi
+
+case "$action" in
+    attach) do_attach ;;
+    resume) do_resume ;;
+    pack)   do_pack ;;
+esac

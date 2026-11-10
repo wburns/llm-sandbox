@@ -33,23 +33,32 @@ fedora:latest
 - `fix-issue <issue-number> <bob|gemini|claude|codex>` – reads the GitHub issue title with `gh`, creates and checks out a
   branch named `<issue-number>_<short_words_from_title>`, and starts the chosen launcher with a prompt to fix the
   issue using the `fix-github` skill.
-- `sandbox-attach [<session-branch> | -b <branch>] [command...]` – opens a shell (or runs a command) in `/workspace`
-  of a running sandbox container. With a session branch it joins that sandbox; with `-b` it finds the sandboxes that
-  were started from `<branch>` (e.g. a PR or issue branch) and joins the only match, or lets you pick with `fzf`
-  (numbered menu if `fzf` is missing) when there are several. With no arguments (or without a branch), it matches all
-  running sandboxes and attaches directly if there is only one, or opens the interactive picker if there are several.
-  Containers are labelled `llm-sandbox.branch` (session branch) and `llm-sandbox.base-branch` at launch.
-- `sandbox-resume [-a | --all] [-b <branch>] [<session-id>] [command...]` – resumes a previously closed session with a
-  fresh on-demand worktree and mounts the preserved session history (`/root`). When invoked without a session ID, it
-  opens an interactive `fzf` picker sorted by last operated date (most recent first) with session details and activity
-  in the preview window.
-- `sandbox-session pack [-a] [-f] [-o <file.zip>] [<session-id>]` / `sandbox-session unpack [-f] <file.zip>` – moves a
-  session to another machine. `pack` picks a session the same way `sandbox-resume` does (`fzf` picker or session ID/prefix)
-  and zips **only its conversation history** (bob's `bob.db`, claude's `projects/` and `history.jsonl`, gemini's `tmp/` chats, codex's `sessions/` and `history.jsonl`),
-  plus `.session-info` and the Logseq run logs. Settings, login files, caches and shell history are never included.
-  Copy the zip over and run `unpack`: it restores the history and re-seeds rules, skills and settings from the local machine,
-  as a fresh launch would. Then run `sandbox-resume` from inside your checkout of the same repository (the agent logs in
-  with the local credentials). The history can still contain secrets the agent saw, so keep the archive private.
+- `llm-sandbox [attach | resume | pack | unpack] [options] [<session>] [command...]` – browse and manage sandbox sessions.
+  - With no subcommand it opens an `fzf` picker of the saved sessions (most recent first, only the current repository's
+    unless `-a`/`--all` or you are outside a repo). Each row shows the state (`running`, `closed`, `stale` for a session
+    that did not close cleanly), agent, repository, branch and last activity; the preview shows the session details,
+    its agent state and the Logseq run logs. **enter** attaches if the sandbox is running and resumes it otherwise,
+    **ctrl-a** forces attach and **ctrl-r** forces resume. `<session>` (a session ID or prefix, container name or
+    session branch) skips the picker when it matches a single session. Without `fzf` a numbered menu is used.
+  - `llm-sandbox --list [-a]` prints the sessions to stdout, one per line with tab separated columns: session, agent,
+    repository, branch, last active, repository directory, state, container, session branch (`-` for an empty value),
+    so scripts and other CLIs can use it.
+  - `llm-sandbox attach [-b <branch>] [<session>] [command...]` – opens a shell (or runs a command) in `/workspace` of a
+    running sandbox. The picker lists only running sandboxes and is skipped if there is just one. With `-b` it only
+    considers sandboxes that were started from `<branch>` (e.g. a PR or issue branch) and everything after the options
+    is the command. Containers are labelled `llm-sandbox.branch` (session branch) and `llm-sandbox.base-branch`.
+  - `llm-sandbox resume [-a] [-b <branch>] [<session>] [command...]` – resumes a previously closed session with a fresh
+    on-demand worktree and mounts the preserved session history (`/root`). `-b` sets the base branch for the new worktree.
+  - `llm-sandbox pack [-a] [-f] [-o <file.zip>] [<session>]` / `llm-sandbox unpack [-f] <file.zip>` – moves a session to another
+    machine. `pack` picks a session the same way (`fzf` picker or session ID/prefix) and zips **only its conversation
+    history** (bob's `bob.db`, claude's `projects/` and `history.jsonl`, gemini's `tmp/` chats, codex's `sessions/` and
+    `history.jsonl`), plus `.session-info` and the Logseq run logs. Settings, login files, caches and shell history are
+    never included. Copy the zip over and run `unpack`: it restores the history and re-seeds rules, skills and settings
+    from the local machine, as a fresh launch would. Then run `llm-sandbox resume` from inside your checkout of the same
+    repository (the agent logs in with the local credentials). The history can still contain secrets the agent saw, so
+    keep the archive private.
+  - These replace the former `sandbox-attach`, `sandbox-resume` and `sandbox-session` commands (`sandbox-session pack`
+    is now `llm-sandbox pack`); the installer removes the old links.
 - `common-sandbox` – shared engine (worktrees, container flags, cleanup). The launchers source it; it can also be
   run directly for maintenance: `common-sandbox --prune` or `common-sandbox --clean`.
 - A systemd **user** service runs at startup, calls `common-sandbox --prune` and rebuilds all images via `just`.
@@ -78,7 +87,7 @@ install.sh  installer
 - The containers themselves are Fedora-based, whatever your host OS, and the images build for x86_64 or aarch64.
 - [`just`](https://github.com/casey/just) to build the images, and systemd for the automatic image update service
   (Linux only; on macOS run the `just` recipe by hand)
-- `gh` (optional, its token is forwarded into containers) and `fzf` (optional, for `sandbox-attach`'s picker)
+- `gh` (optional, its token is forwarded into containers) and `fzf` (optional, for `llm-sandbox`'s picker)
 
 On macOS with Homebrew:
 
@@ -109,7 +118,7 @@ ones (gh, fzf, a running container runtime, systemd on Linux) only produce a war
 By default:
 
 - files are copied to `~/.local/share/llm-sandbox`
-- commands are symlinked into `~/.local/bin`: `review-pr`, `fix-issue`, `sandbox-attach` and `common-sandbox`
+- commands are symlinked into `~/.local/bin`: `review-pr`, `fix-issue`, `llm-sandbox` and `common-sandbox`
   always, and `bob-sandbox` / `claude-sandbox` / `gemini-sandbox` / `codex-sandbox` only for agents whose config directory exists
   (a link from an earlier install for an agent that is no longer found is removed)
 - `rules/` and `skills/` are copied into whichever of `~/.bob`, `~/.claude`, `~/.gemini` and `~/.codex` already exist (under
@@ -333,7 +342,7 @@ gateway, add its host yourself.
 
 Limitations: only HTTPS works (no `ssh://` git remotes, no raw TCP); anything the container reached on the host's
 loopback (e.g. a local gateway) is unreachable; an allowed host can still be used to send data out (e.g. to a GitHub
-gist), so this limits where the agent can talk, not what it can send there; and `sandbox-resume` does not enable it yet.
+gist), so this limits where the agent can talk, not what it can send there; and `llm-sandbox resume` does not enable it yet.
 
 ## Configuration
 

@@ -6,7 +6,7 @@
 #   - copies bin/, backend/, images/, share/, rules/, skills/ and the justfile to
 #     $INSTALL_DIR. The launchers seed every sandbox session with the rules/ and
 #     skills/ found there; the agent config directories below are layered on top.
-#   - symlinks the commands into $BIN_DIR: review-pr, fix-issue, sandbox-attach and
+#   - symlinks the commands into $BIN_DIR: review-pr, fix-issue, llm-sandbox and
 #     common-sandbox always, and bob-sandbox, claude-sandbox, gemini-sandbox, codex-sandbox only for
 #     agents whose config directory ($BOB_DIR, $CLAUDE_DIR, $GEMINI_DIR, $CODEX_DIR) exists
 #   - unless --no-agent-config is given, also copies the shared rules/ and skills/
@@ -49,10 +49,11 @@ LINKS=(
     "review-pr:review-pr"
     "fix-issue:fix-issue"
     "common-sandbox:common-sandbox.sh"
-    "sandbox-attach:sandbox-attach"
-    "sandbox-resume:sandbox-resume"
-    "sandbox-session:sandbox-session"
+    "llm-sandbox:llm-sandbox"
 )
+
+# commands from earlier versions, replaced by `llm-sandbox <subcommand>`; their links are removed
+OLD_LINKS=(sandbox-attach sandbox-resume sandbox-session)
 
 # agent name:config directory. Existing ones receive the shared rules/ and skills/
 AGENTS=(
@@ -124,7 +125,7 @@ uninstall() {
     have_systemd_user && systemctl --user daemon-reload || true
 
     local entry
-    for entry in "${LINKS[@]}"; do
+    for entry in "${LINKS[@]}" "${OLD_LINKS[@]}"; do
         local link="$BIN_DIR/${entry%%:*}"
         # Only remove symlinks that point into our install dir
         if [ -L "$link" ] && [[ "$(readlink "$link")" == "$INSTALL_DIR"/* ]]; then
@@ -219,6 +220,13 @@ install() {
         done
         ln -sfn "$INSTALL_DIR/bin/${entry#*:}" "$link"
         item "$OK" "$name" "linked"
+    done
+    for name in "${OLD_LINKS[@]}"; do
+        link="$BIN_DIR/$name"
+        if [ -L "$link" ] && [[ "$(readlink "$link")" == "$INSTALL_DIR"/* ]]; then
+            rm -f "$link"
+            item "$SKIP" "$name" "removed (now: llm-sandbox ${name#sandbox-})"
+        fi
     done
     local path_ok=true
     case ":$PATH:" in

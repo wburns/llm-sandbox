@@ -128,7 +128,7 @@ if ! command -v "$EXECUTABLE" &>/dev/null; then
 fi
 
 # 8. Run the reviewer command
-PROMPT="Please review the changes in pull request #${PR_NUM} on the current branch. You can query information from PR #${PR_NUM} itself. Note the current branch is a worktree of this PR, so you don't need to fetch from git. Also check existing comments on the PR to confirm if they are correct or not and if additional information should be provided there."
+PROMPT="Use the review pr skill to review the changes which match pull request #${PR_NUM} on the current branch. You can query information from PR #${PR_NUM} itself. Note the current branch is a worktree of this PR, so you don't need to fetch from git. Also check existing comments on the PR to confirm if they are correct or not and if additional information should be provided there."
 if [[ -n "$BATCH_ID" ]]; then
     PROMPT+=" This review is part of the review batch '${BATCH_ID}'. In the Logseq log you write, record this batch identifier as a property on the top-level review block (batch:: ${BATCH_ID}) so reviews in the same batch can be found and compared together."
 fi
