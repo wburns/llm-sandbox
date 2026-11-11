@@ -338,6 +338,15 @@ _release_setup_lock() {
     unset SANDBOX_LOCK_FD
 }
 
+# _lock_worktree - the repository's .git is mounted into every container, but a
+# worktree's host path (recorded in .git/worktrees/<name>/gitdir) does not exist
+# there, so a `git worktree prune` (or gc) run by any agent would see every session's
+# worktree as missing and delete its registration, breaking git in all of them.
+# A locked worktree is never pruned.
+_lock_worktree() {
+    git worktree lock --reason "llm-sandbox session in use" "$WORKTREE_DIR"
+}
+
 # --- 3. Worktree & Workspace Initialization ---
 init_worktree_environment() {
     local agent_prefix="${1:-agent}"
@@ -373,6 +382,7 @@ init_worktree_environment() {
 
     echo "🌿 Creating worktree at $WORKTREE_DIR based on '$CURRENT_BRANCH'..."
     git worktree add -b "$TEMP_BRANCH" "$WORKTREE_DIR" HEAD
+    _lock_worktree
 
     # A caller (review-pr) can set SANDBOX_RESTORE_REF to have the main repo switched
     # back to that branch/commit now that the worktree exists, before the agent starts.
@@ -441,6 +451,7 @@ init_resume_environment() {
 
     echo "🌿 Creating worktree at $WORKTREE_DIR based on '$CURRENT_BRANCH' for resume..."
     git worktree add -b "$TEMP_BRANCH" "$WORKTREE_DIR" "$INITIAL_COMMIT"
+    _lock_worktree
 
     _save_session_metadata "resumed"
 
@@ -566,7 +577,8 @@ _cleanup_and_merge_prompt() {
 
     echo "🧹 Removing worktree..."
     if [ -d "$WORKTREE_DIR" ]; then
-        git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+        # (--force twice: the worktree is locked, see _lock_worktree)
+        git worktree remove --force --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
         git worktree prune 2>/dev/null || true
     fi
 
@@ -651,6 +663,7 @@ run_agent_container() {
         -v "$tracker_path":/usr/local/bin/logseq-tracker:ro,z
         -v "$SESSION_LOG_DIR":/logseq-logs:z
         -e LOGSEQ_LOG_DIR=/logseq-logs
+        -e LLM_SANDBOX_SESSION="$(basename "$SANDBOX_HOME")"  # logseq-tracker's session:: tag
     )
 
     # Forwarded by name (value taken from this process's environment), so the

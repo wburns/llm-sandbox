@@ -54,6 +54,8 @@ def new_state(ref: str, action: str, repo: str, title: str, synopsis: str) -> di
     now = datetime.datetime.now()
     return {
         "id": str(uuid.uuid4()),
+        # set by the sandbox launchers; lets `llm-sandbox resume` find this log again
+        "session": os.environ.get("LLM_SANDBOX_SESSION"),
         "start_time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "output": f"run_{slug(ref)}_{slug(action)}_{now.strftime('%Y%m%d-%H%M%S')}.md",
         "ref": ref,
@@ -95,6 +97,8 @@ def render_logseq_markdown(state: dict) -> str:
         f"  repo:: {one_line(state['repo'])}",
         f"  issue:: #{ref}" if ref.isdigit() else f"  ref:: {one_line(ref)}",
     ]
+    if state.get("session"):
+        lines.append(f"  session:: {one_line(state['session'])}")
     if state.get("branch"):
         lines.append(f"  branch:: {one_line(state['branch'])}")
 

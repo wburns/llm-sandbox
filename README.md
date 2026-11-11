@@ -50,7 +50,8 @@ fedora:latest
   - `llm-sandbox resume [-a] [-b <branch>] [<session>] [command...]` – resumes a previously closed session with a fresh
     on-demand worktree and mounts the preserved session history (`/root`). The worktree is based on the branch the session started from (your current checkout is left alone and a
     different branch is reported); if that branch no longer exists, the current checkout is used. `-b` checks out and
-    uses another base branch instead.
+    uses another base branch instead. The session's earlier Logseq run logs are copied into
+    `/root/.llm-sandbox/previous-logs` and a note in the agent's rules file tells it to read them first (see below).
   - `llm-sandbox pack [-a] [-f] [-o <file.zip>] [<session>]` / `llm-sandbox unpack [-f] <file.zip>` – moves a session to another
     machine. `pack` picks a session the same way (`fzf` picker or session ID/prefix) and zips **only its conversation
     history** (bob's `bob.db`, claude's `projects/` and `history.jsonl`, gemini's `tmp/` chats, codex's `sessions/` and
@@ -202,6 +203,12 @@ outside `BASE_SANDBOX_DIR`, so `--clean`/`--prune` keep it). When the container 
 `run_*.md` log to the Logseq journal of the day the run started, `$LOGSEQ_GRAPH_DIR/journals/YYYY_MM_DD.md`
 (default graph `~/Documents/Logseq`; created if missing). A log whose `id::` is already in the journal is skipped, so
 nothing is duplicated. If the graph directory doesn't exist the logs are just kept in the session directory.
+
+Every log is tagged with a `session::` property (the session ID, e.g. `claude_1234_1700000000`), so you can query a
+session's entries in Logseq. `llm-sandbox resume` uses the same tag: it collects the raw logs from the session's own
+log directory and from every directory holding a log tagged with that session (resumed runs write to their own
+directory), so each resume sees all earlier runs. Logs written before the tag existed are only found in the session's
+own directory. `pack` still includes only that directory.
 
 ### What the containers see
 

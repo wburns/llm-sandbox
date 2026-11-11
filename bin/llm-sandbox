@@ -357,6 +357,54 @@ do_attach() {
 }
 
 # --- resume ---
+# stage_previous_logs <session-home> <agent> <session>
+# Copies the Logseq run logs of earlier runs of this session into the session home
+# (/root/.llm-sandbox/previous-logs in the container) and adds a note about them to
+# the agent's rules file, so the agent reads them before continuing. A log belongs
+# to the session if it sits in the session's own log directory or carries its
+# "session::" property (resumed runs write to their own directories).
+stage_previous_logs() {
+    local home="$1" agent="$2" sname="$3"
+    local dest="$home/.llm-sandbox/previous-logs" note_file
+    case "$agent" in
+        bob)    note_file="$home/.bob/rules/resume-context.md" ;;
+        claude) note_file="$home/.claude/CLAUDE.md" ;;
+        gemini) note_file="$home/.gemini/GEMINI.md" ;;
+        codex)  note_file="$home/.codex/AGENTS.md" ;;
+        *)      return 0 ;;
+    esac
+    local begin='<!-- llm-sandbox resume begin -->' end='<!-- llm-sandbox resume end -->'
+
+    # Drop what an earlier resume left behind
+    rm -rf "$dest"
+    if [ -f "$note_file" ]; then
+        sed "/$begin/,/$end/d" "$note_file" > "$note_file.tmp" && mv "$note_file.tmp" "$note_file"
+    fi
+
+    local logs=() log
+    while IFS= read -r log; do
+        logs+=("$log")
+    done < <({
+        ls "$LOGSEQ_LOG_DIR/$sname"/run_*.md
+        grep -lsxF "  session:: $sname" "$LOGSEQ_LOG_DIR"/*/run_*.md
+    } 2>/dev/null | sort -u)
+    [ "${#logs[@]}" -gt 0 ] || return 0
+
+    mkdir -p "$dest" "$(dirname "$note_file")"
+    cp -p "${logs[@]}" "$dest/"
+    cat >> "$note_file" <<EOF
+
+$begin
+## Resumed sandbox session
+
+This is a resumed session. Logseq run logs from its earlier runs (what was done, findings,
+files touched, verification) are in /root/.llm-sandbox/previous-logs/ (oldest first: \`ls -tr\`).
+Read them before continuing. They are read-only context: log new work with logseq-tracker as usual.
+$end
+EOF
+    echo "📝 Resume context: ${#logs[@]} earlier Logseq run log(s) -> /root/.llm-sandbox/previous-logs"
+}
+
 do_resume() {
     [ "$R_CONTAINER" = "-" ] || die "Session '$R_SNAME' is still running in $R_CONTAINER (use 'llm-sandbox attach')."
     local SESSION_HOME="$SESSIONS_DIR/$R_SNAME" AGENT="$R_AGENT" REPO_DIR=""
@@ -388,6 +436,7 @@ do_resume() {
 
     # --- Initialize on-demand worktree & environment ---
     init_resume_environment "$SESSION_HOME" "$AGENT"
+    stage_previous_logs "$SESSION_HOME" "$AGENT" "$R_SNAME"
 
     # --- Launch Container ---
     case "$AGENT" in
