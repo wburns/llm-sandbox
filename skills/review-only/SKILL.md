@@ -34,6 +34,13 @@ logseq-tracker init --ref "<BRANCH>" --action review-only --repo "<OWNER/REPO or
 
 If `logseq-tracker` is missing, say so, and print the findings in the same Logseq format by hand (see step 5).
 
+If the branch belongs to a PR, record its GitHub URL in the log's `url::` property (skip this if there is no PR):
+
+```
+pr_url=$(gh pr view --json url -q .url 2>/dev/null)
+[ -n "$pr_url" ] && logseq-tracker update --ref "<BRANCH>" --action review-only --url "$pr_url"
+```
+
 ## 3. Understand the intent
 
 Before looking for problems, work out what the PR is trying to do and whether that matches the originally logged issue, and record it in the log so a later reader can review the changes with that context:

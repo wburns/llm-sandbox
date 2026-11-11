@@ -16,6 +16,7 @@ Usage:
   logseq-tracker update --ref my-branch --action review-only --finding "pkg/a.go:10 nil deref" --severity high
   logseq-tracker update --ref my-branch --action review-fix --resolve 1 --file pkg/a.go
   logseq-tracker update --ref my-branch --action review-only --verify "mvn test: 120 passed, 0 failed"
+  logseq-tracker update --ref my-branch --action review-only --url https://github.com/owner/repo/pull/7   (sets the url:: property)
   logseq-tracker update --ref my-branch --action review-only --change "Make the cache TTL configurable instead of hard-coded"   (repeatable; one line per goal)
   logseq-tracker update --ref my-branch --action review-only --intent-match "partially matches #42 - eviction part missing"
   logseq-tracker update --ref my-branch --action review-only --edit 2 --finding "pkg/a.go:10 corrected text" --severity low
@@ -101,6 +102,8 @@ def render_logseq_markdown(state: dict) -> str:
         lines.append(f"  session:: {one_line(state['session'])}")
     if state.get("branch"):
         lines.append(f"  branch:: {one_line(state['branch'])}")
+    if state.get("url"):
+        lines.append(f"  url:: {one_line(state['url'])}")
 
     if req:
         lines.append(f"  created:: {state['start_time']}")
@@ -168,6 +171,7 @@ def main():
     p_update = subparsers.add_parser("update")
     add_key(p_update)
     p_update.add_argument("--synopsis", default=None)
+    p_update.add_argument("--url", default=None, help="set the url:: property (e.g. the GitHub PR URL)")
     p_update.add_argument("--file", default=None)
     p_update.add_argument("--finding", default=None, help="record a review finding (include path:line)")
     p_update.add_argument("--severity", choices=SEVERITIES, default=None)
@@ -237,6 +241,8 @@ def main():
     if args.cmd == "update":
         if args.synopsis:
             state["synopsis"] = args.synopsis
+        if args.url:
+            state["url"] = args.url
         if args.file and args.file not in state["files"]:
             state["files"].append(args.file)
         if args.verify:
