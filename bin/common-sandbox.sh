@@ -19,12 +19,38 @@ _COMMON_SANDBOX_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && p
 source "$_COMMON_SANDBOX_DIR/../backend/selector.sh"  # (bin/ and backend/ are siblings)
 
 # --- 2. Maintenance Flags ---
+# _sandbox_repos - the repositories sandbox sessions were started from (one per line)
+_sandbox_repos() {
+    sed -n 's/^REPO_DIR=//p' "$BASE_SANDBOX_DIR"/sessions/*/.session-info 2>/dev/null | sort -u || true
+}
+
+# _prune_dangling_worktrees <repo>... - drops the registrations of sandbox worktrees
+# whose directory is gone. Session worktrees are locked (see _lock_worktree), which
+# makes `git worktree prune` skip them, so unlock the missing ones first. Worktrees
+# whose directory still exists are left alone: they may hold unsaved work.
+_prune_dangling_worktrees() {
+    local base repo wt
+    base="$(readlink -f "$WORKTREES_BASE_DIR")"
+    for repo in "$@"; do
+        [ -d "$repo" ] || continue
+        while IFS= read -r wt; do
+            case "$wt" in
+                "$base"/*) [ -e "$wt" ] || git -C "$repo" worktree unlock "$wt" 2>/dev/null || true ;;
+            esac
+        done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+        git -C "$repo" worktree prune 2>/dev/null || true
+    done
+}
+
 handle_maintenance_flags() {
     local action="$1"
+    local repos=()
+    # (read before the session records are deleted below)
+    mapfile -t repos < <(_sandbox_repos)
     if [[ "$action" == "--clean" ]]; then
         echo "🧹 Wiping all sandbox environments, caches, and worktrees..."
         rm -rf "${BASE_SANDBOX_DIR:?}"/*
-        git worktree prune 2>/dev/null || true
+        _prune_dangling_worktrees "${repos[@]}"
         echo "Done."
         exit 0
     elif [[ "$action" == "--prune" ]]; then
@@ -34,7 +60,7 @@ handle_maintenance_flags() {
             find "$BASE_SANDBOX_DIR" -type f -mtime +14 -delete 2>/dev/null || true
             find "$BASE_SANDBOX_DIR" -type d -empty -delete 2>/dev/null || true
         fi
-        git worktree prune 2>/dev/null || true
+        _prune_dangling_worktrees "${repos[@]}"
         echo "Done."
         exit 0
     fi

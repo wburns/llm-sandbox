@@ -158,6 +158,11 @@ common-sandbox --prune   # delete cache files older than 14 days
 common-sandbox --clean   # wipe all sandbox state and worktrees
 ```
 
+Both also drop the git registrations of sandbox worktrees whose directory is gone (in every repository
+the sandbox has been used from). Session worktrees are locked while in use, so an agent running
+`git worktree prune` inside a container cannot remove the registrations of other sessions.
+Worktrees whose directory still exists are never touched.
+
 ## Opinionated defaults
 
 - **Ripwire is installed in every image.** The base image downloads
