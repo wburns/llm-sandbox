@@ -194,14 +194,14 @@ agent's config directory so host-side runs of the tools use them:
 |---|---|
 | `rules/ripwire.md` | Tells the agent to explore code with `ripwire` instead of reading whole files |
 | `rules/coding.md` | Coding guidelines |
-| `skills/code-review/` | Review a branch/PR against repo coding standards and the originating spec |
 | `skills/grill-me/` | Stress-test a plan or decision by questioning the user |
 | `skills/fix-github/` | Fix a GitHub issue, logging the run in Logseq format |
 | `skills/review-fix/` | Review the branch's changes and fix what is found, logging each finding and fix |
 | `skills/review-only/` | Review the branch's changes without editing; prints the findings as a Logseq log |
 | `skills/request-change/` | Log a wanted code change as a Logseq `TODO`, then ask whether to implement it now or leave it logged |
+| `skills/grill-me-review/` | Turn PR review feedback (e.g. Sourcery) into a TODO list, grill the user on each point, and log the agreed outcome without editing |
 
-The last four use `logseq-tracker` ([`share/logseq-tracker`](share/logseq-tracker)), which every container gets
+The last five use `logseq-tracker` ([`share/logseq-tracker`](share/logseq-tracker)), which every container gets
 at `/usr/local/bin/logseq-tracker`. Each session writes its logs to its own directory,
 `~/.local/share/llm-sandbox-logs/<agent>_<session>` on the host (override the base with `LOGSEQ_LOG_DIR`; it is
 outside `BASE_SANDBOX_DIR`, so `--clean`/`--prune` keep it). When the container ends, the exit trap appends each
@@ -329,7 +329,7 @@ Notes:
   `~/.gemini/rules` with a symlink to it (e.g. `ln -s ~/.bob/rules ~/.claude/rules`). Compilation happens on the
   host before the container starts and symlinks are followed when copying, so this works. The installer will then
   write into the symlink target.
-- The default skills were written for Bob; `code-review`, for example, expects to spawn parallel sub-agents, which
+- The default skills were written for Bob; `grill-me-review`, for example, dispatches sub-agents for fact-finding, which
   other tools may support differently.
 
 ## Network firewall (experimental)
