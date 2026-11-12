@@ -6,3 +6,6 @@ auth.openai.com
 
 # "Sign in with ChatGPT": model requests and account/usage calls go to chatgpt.com
 chatgpt.com
+
+# File and image content served by ChatGPT/Codex (regional sdmntpr* CDN hosts)
+*.oaiusercontent.com
