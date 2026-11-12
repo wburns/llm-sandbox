@@ -75,3 +75,8 @@ server.on('connect', async (req, client, head) => {
 });
 
 server.listen(Number(port), '0.0.0.0', () => console.log(`listening on ${port}`));
+
+// As PID 1 in the container node ignores SIGTERM by default, so `podman rm -f`
+// would wait out its 10s stop timeout before killing us.
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(0));
+
